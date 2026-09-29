@@ -1,0 +1,35 @@
+# 海龟汤 · CLI 摸鱼版（纯 Rust 单二进制）
+# v3.0 起只做 CLI：无 Tauri / 无前端。
+# 架构见 design-doc/02-技术架构.md
+[package]
+name = "turtle-soup"
+description = "终端海龟汤摸鱼游戏（CLI）"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+license = "MIT"
+
+[lib]
+name = "turtle_soup"
+path = "src/lib.rs"
+
+[[bin]]
+name = "soup-cli"
+path = "src/bin/soup_cli.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "io-std", "time", "signal"] }
+directories = "5"
+tempfile = "3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

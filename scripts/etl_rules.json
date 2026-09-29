@@ -1,0 +1,12 @@
+{
+  "comment": "ETL 清洗规则（python 与 Rust 两端共用，源头见 04 §7）",
+  "minFacts": 4,
+  "maxFacts": 6,
+  "minCoreFacts": 1,
+  "maxCoreFacts": 2,
+  "blockedKeywords": [
+    "血腥", "血泊", "肢解", "断肢", "残肢", "内脏", "割喉", "自残", "奸杀", "碎尸",
+    "色情", "裸体", "性交", "强奸", "淫", "肉欲"
+  ],
+  "filterScope": "gore+nsfw only; horror/supernatural NOT filtered"
+}
