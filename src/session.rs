@@ -307,10 +307,24 @@ pub struct PuzzleStore {
 }
 
 impl PuzzleStore {
+    /// 加载题库：内置题（出厂 `assets/puzzles.json`）+ 用户题（app data）。
+    ///
+    /// 文件**存在但读取/解析失败**时返回明确错误，**不静默降级为空题库**
+    /// （见 02 §4.3、07 §4）；文件缺失才视为空（提示用户 `fetch`）。
     pub fn load() -> Result<Self, AppError> {
-        let builtin = load_puzzle_file(&crate::builtin_puzzles_path()).unwrap_or_default();
+        let builtin_path = crate::builtin_puzzles_path();
+        let builtin = if builtin_path.is_file() {
+            load_puzzle_file(&builtin_path)?
+        } else {
+            crate::log_warn!(
+                "session",
+                "内置题库缺失：{}（可执行 `soup-cli fetch` 拉题）",
+                builtin_path.display()
+            );
+            Vec::new()
+        };
         let user = match user_puzzles_path() {
-            Ok(p) if p.exists() => load_puzzle_file(&p).unwrap_or_default(),
+            Ok(p) if p.is_file() => load_puzzle_file(&p)?,
             _ => Vec::new(),
         };
         Ok(Self { builtin, user })

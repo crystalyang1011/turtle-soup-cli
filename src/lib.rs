@@ -33,23 +33,35 @@ pub fn app_data_dir() -> Result<std::path::PathBuf, AppError> {
     Ok(dir)
 }
 
-/// 项目根目录：编译期为 crate 根（`CARGO_MANIFEST_DIR`），
-/// 发行版退化为可执行文件所在目录。
+/// 项目根目录（**运行时**解析，容忍仓库被移动 / 改名，见 02 §4.3）。
+///
+/// 候选来源按优先级：编译期 crate 根（`CARGO_MANIFEST_DIR`）→ 当前工作目录 →
+/// 可执行文件所在目录，各候选再连同其向上若干级祖先一并探测；
+/// 命中含 `assets/puzzles.json` 或 `Cargo.toml` 的目录即视为根。
+/// 全部落空时退化到可执行文件目录。
 pub fn project_root() -> std::path::PathBuf {
-    let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if dev.join("assets").exists() || dev.join("Cargo.toml").exists() {
-        return dev;
+    let mut seeds: Vec<std::path::PathBuf> = vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))];
+    if let Ok(cwd) = std::env::current_dir() {
+        seeds.push(cwd);
     }
-    std::env::current_exe()
+    if let Some(dir) = std::env::current_exe()
         .ok()
-        .and_then(|e| e.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
+    {
+        seeds.push(dir);
+    }
+    for seed in &seeds {
+        for anc in seed.ancestors().take(5) {
+            if anc.join("assets").join("puzzles.json").is_file() || anc.join("Cargo.toml").is_file() {
+                return anc.to_path_buf();
+            }
+        }
+    }
+    seeds.pop().unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-/// 出厂内置题库路径：仓库 `assets/puzzles.json`
+/// 出厂内置题库路径：项目根下 `assets/puzzles.json`
 /// （开发期由 ETL 预拉筛选，见 design-doc/04-题源与ETL.md §5）。
 pub fn builtin_puzzles_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("assets")
-        .join("puzzles.json")
+    project_root().join("assets").join("puzzles.json")
 }

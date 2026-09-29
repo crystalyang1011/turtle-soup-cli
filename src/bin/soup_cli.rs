@@ -65,7 +65,7 @@ fn print_help() {
          \x20 soup-cli ask <puzzle_id> <问题...>          单次判定（脚本/冒烟）\n\
          \x20 soup-cli fetch [--difficulty N] [--mirror]  拉取一批新题（100 条）\n\
          \x20 soup-cli config                            打印配置与日志路径\n\
-         \n对局内: 直接输入即提问 | /guess <推理> | /hint | /hint2 | /status | /bb(伪装) | /quit\n\
+         \n对局内: 直接输入即提问 | /guess <推理> | /hint | /hint2 | /status | /quit\n\
          \nAPI Key: 环境变量 TURTLE_API_KEY 或 config.json 的 api_key。"
     );
 }
@@ -223,16 +223,6 @@ async fn cmd_play(args: &[String]) -> Result<(), turtle_soup::AppError> {
             continue;
         }
 
-        // 伪装屏
-        if input == "/bb" || input == "bb" {
-            show_disguise();
-            // 等一次回车再恢复
-            let mut _skip = String::new();
-            let _ = io::stdin().read_line(&mut _skip);
-            redraw(&puzzle, &session);
-            continue;
-        }
-
         if let Some(rest) = input.strip_prefix("/guess ") {
             let r = with_spinner("裁判评定中…", svc.judge_guess(&puzzle, &mut session, rest)).await;
             handle(&shared, &mut session, r.map(|x| {
@@ -310,7 +300,7 @@ fn render_intro(puzzle: &Puzzle, session: &Session) {
     println!("\n=== 海龟汤 · 摸鱼版 ===");
     println!("题目: {}  (D{})", puzzle.title, puzzle.difficulty);
     println!("\n【汤面】{}\n", puzzle.surface);
-    println!("直接输入即提问 | /guess <推理> | /hint | /hint2 | /status | /bb 伪装 | /quit");
+    println!("直接输入即提问 | /guess <推理> | /hint | /hint2 | /status | /quit");
     println!(
         "(提示上限 {} 次，猜底上限 {} 次)  已问 {} 问，进度 {}/{}\n",
         engine::max_hints(puzzle.fact_count()),
@@ -319,65 +309,6 @@ fn render_intro(puzzle: &Puzzle, session: &Session) {
         session.hit_facts.len(),
         puzzle.fact_count()
     );
-}
-
-/// 从伪装屏恢复：清屏后重绘对局（见 06 §2 必须重绘）。
-fn redraw(puzzle: &Puzzle, session: &Session) {
-    clear_screen();
-    render_intro(puzzle, session);
-    let shown: Vec<_> = session.messages.iter().rev().take(6).collect();
-    if !shown.is_empty() {
-        println!("--- 最近对话 ---");
-        for m in shown.into_iter().rev() {
-            let who = match m.role {
-                turtle_soup::models::Role::Player => "你",
-                turtle_soup::models::Role::Host => "主持人",
-            };
-            println!("{who}: {}", m.text);
-        }
-    }
-}
-
-/// 伪装屏：清屏 + 打印"假构建日志"（见 06 §3）。
-fn show_disguise() {
-    if !io::stdout().is_terminal() {
-        println!("$ pnpm build\n✓ built in 1.92s");
-        return;
-    }
-    clear_screen();
-    let logs: [&[&str]; 3] = [
-        &[
-            "$ pnpm build",
-            "▲ vite v5.4.21 building for production...",
-            "✓ 41 modules transformed.",
-            "dist/index.html                 0.39 kB",
-            "dist/assets/index-D4f2a1.js    86.08 kB │ gzip: 34.12 kB",
-            "✓ built in 1.92s",
-        ],
-        &[
-            "$ cargo test --workspace",
-            "   Compiling turtle-soup v0.1.0",
-            "    Finished test [unoptimized] target(s) in 2.04s",
-            "     Running unittests src/lib.rs",
-            "test result: ok. 42 passed; 0 failed",
-        ],
-        &[
-            "$ pnpm install",
-            "Progress: resolved 214, reused 210, downloaded 0",
-            "Packages: +214",
-            "Done in 6.1s using pnpm v10.34.6",
-        ],
-    ];
-    let idx = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0) as usize)
-        % logs.len();
-    for l in logs[idx] {
-        println!("{l}");
-    }
-    print!("\n（按回车返回）");
-    io::stdout().flush().ok();
 }
 
 /// 终端标题伪装（ANSI OSC）。
@@ -391,13 +322,6 @@ fn set_title(t: &str) {
 fn restore_title() {
     if io::stdout().is_terminal() {
         print!("\x1b]0; \x07");
-        io::stdout().flush().ok();
-    }
-}
-
-fn clear_screen() {
-    if io::stdout().is_terminal() {
-        print!("\x1b[2J\x1b[H");
         io::stdout().flush().ok();
     }
 }
