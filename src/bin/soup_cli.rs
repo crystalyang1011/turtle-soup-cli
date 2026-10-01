@@ -9,7 +9,7 @@ use std::time::Duration;
 use turtle_soup::config::AppConfig;
 use turtle_soup::dataset::{DatasetClient, FetchCursor, DEFAULT_ENDPOINT, MIRROR_ENDPOINT};
 use turtle_soup::game::{GameService, MAX_QUESTIONS};
-use turtle_soup::models::{HintLevel, Judgment, Puzzle, Session, SessionStatus};
+use turtle_soup::models::{ErrorCode, Judgment, Puzzle, Session, SessionStatus};
 use turtle_soup::session::{self, PuzzleStore};
 use turtle_soup::{engine, logging, secrets};
 
@@ -65,7 +65,7 @@ fn print_help() {
          \x20 soup-cli ask <puzzle_id> <问题...>          单次判定（脚本/冒烟）\n\
          \x20 soup-cli fetch [--difficulty N] [--mirror]  拉取一批新题（100 条）\n\
          \x20 soup-cli config                            打印配置与日志路径\n\
-         \n对局内: 直接输入即提问 | /guess <推理> | /hint | /hint2 | /status | /quit\n\
+         \n对局内: 直接输入即提问 | /guess <推理> | /hint | /switch [id] | /hide | /list | /status | /quit\n\
          \nAPI Key: 环境变量 TURTLE_API_KEY 或 config.json 的 api_key。"
     );
 }
@@ -81,13 +81,16 @@ fn cmd_list() -> Result<(), turtle_soup::AppError> {
         return Ok(());
     }
     println!("共 {} 题：", store.len());
+    let hidden = session::load_hidden();
     for p in store.all() {
+        let mark = if hidden.contains(&p.id) { "  （已隐藏）" } else { "" };
         println!(
-            "  {:<14} D{}  {} 条事实  {}",
+            "  {:<14} D{}  {} 条事实  {}{}",
             p.id,
             p.difficulty,
             p.key_facts.len(),
-            p.title
+            p.title,
+            mark
         );
     }
     Ok(())
@@ -184,7 +187,7 @@ async fn cmd_play(args: &[String]) -> Result<(), turtle_soup::AppError> {
     let svc = build_service()?;
 
     // 恢复 or 新开
-    let (puzzle, mut session) = if let Some(rid) = resume_id {
+    let (mut puzzle, mut session) = if let Some(rid) = resume_id {
         let s = session::load_session(&rid)?;
         let p = svc.pick_puzzle(Some(&s.puzzle_id))?.clone();
         (p, s)
@@ -203,7 +206,7 @@ async fn cmd_play(args: &[String]) -> Result<(), turtle_soup::AppError> {
 
     // 共享会话：Ctrl+C 时落盘并还原标题（见 06 §2、07 §8）
     let shared: SharedSession = Arc::new(Mutex::new(Some(session.clone())));
-    spawn_interrupt_handler(shared.clone(), session.id.clone());
+    spawn_interrupt_handler(shared.clone());
 
     if io::stdout().is_terminal() {
         set_title(FAKE_TITLE);
@@ -251,24 +254,114 @@ async fn cmd_play(args: &[String]) -> Result<(), turtle_soup::AppError> {
             }
             "/status" => {
                 println!(
-                    "状态 {:?} | 已问 {} 问 | 命中 {:?} | 提示 {} 次 | 猜底失败 {} 次 | 剩余猜底 {} 次",
+                    "状态 {:?} | 已问 {} 问 | 命中 {:?} | 提示 {} 次 | 猜底失败 {} 次",
                     session.status,
                     session.question_count,
                     session.hit_facts,
                     session.hint_levels.len(),
                     session.guess_attempts_failed,
-                    engine::remaining_guesses(session.guess_attempts_failed),
                 );
                 continue;
             }
-            "/hint" => {
-                let r = with_spinner("生成提示中…", svc.use_hint(&puzzle, &mut session, HintLevel::L1)).await;
-                handle(&shared, &mut session, r.map(|x| format!("[L1 方向提示] {}", x.text)))?;
+            "/list" => {
+                let hidden = session::load_hidden();
+                for p in svc.store.all() {
+                    let mark = if hidden.contains(&p.id) { "  （已隐藏）" } else { "" };
+                    println!("  {:<14} D{}  {} 条事实  {}{}", p.id, p.difficulty, p.key_facts.len(), p.title, mark);
+                }
                 continue;
             }
-            "/hint2" => {
-                let r = svc.use_hint(&puzzle, &mut session, HintLevel::L2).await;
-                handle(&shared, &mut session, r.map(|x| format!("[L2 事实提示] {}", x.text)))?;
+            "/hide" => {
+                // 标记**当前**题目"不再显示"：先让用户确认，确认后才隐藏并换题（见 03 §4）。
+                let target = session.puzzle_id.clone();
+                print!("确认隐藏当前题目「{}」并换一题？[y/N] ", puzzle.title);
+                io::stdout().flush().ok();
+                let mut ans = String::new();
+                let ans = if io::stdin().read_line(&mut ans)? == 0 {
+                    String::new()
+                } else {
+                    ans.trim().to_ascii_lowercase()
+                };
+                if ans != "y" && ans != "yes" {
+                    println!("已取消。");
+                    continue;
+                }
+                session::hide_puzzle(&target)?;
+                println!("已标记隐藏：{target}，随机选题不再显示（用 /unhide {target} 恢复）。");
+                // 当前题不再显示 → 自动换一题（无可见题则停在原地）。
+                session.pause();
+                session::save_session(&session)?;
+                match pick_random_puzzle(&svc, None) {
+                    Ok(new_puzzle) => {
+                        let new_session = Session::new(
+                            format!("cli-{}", turtle_soup::models::now_ts()),
+                            &new_puzzle,
+                        );
+                        session::save_session(&new_session)?;
+                        *shared.lock().unwrap() = Some(new_session.clone());
+                        puzzle = new_puzzle;
+                        session = new_session;
+                        render_intro(&puzzle, &session);
+                    }
+                    Err(e) => println!("{}", e.message),
+                }
+                continue;
+            }
+            "/unhide" => {
+                let arg = input.strip_prefix("/unhide").unwrap_or("").trim();
+                if arg.is_empty() {
+                    println!("用法：/unhide <puzzle_id>（用 /list 查看）");
+                    continue;
+                }
+                match session::unhide_puzzle(arg)? {
+                    true => println!("已取消隐藏：{arg}"),
+                    false => println!("该题未被隐藏：{arg}"),
+                }
+                continue;
+            }
+            "/switch" | "/pick" => {
+                // 切换题目：/switch <puzzle_id> 指定，/switch 随机换一题。
+                // 当前对局挂起落盘后开新局（见 02 §4.2）。
+                let target = input
+                    .strip_prefix("/switch")
+                    .or_else(|| input.strip_prefix("/pick"))
+                    .map(str::trim)
+                    .unwrap_or("");
+                let new_puzzle = if target.is_empty() {
+                    match pick_random_puzzle(&svc, None) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            println!("{}", e.message);
+                            continue;
+                        }
+                    }
+                } else {
+                    match svc.store.get(target) {
+                        Some(p) => p.clone(),
+                        None => {
+                            println!("题库中不存在题目 {target}（用 /list 查看可选 id）");
+                            continue;
+                        }
+                    }
+                };
+                // 挂起旧局并落盘，再开新局。
+                session.pause();
+                session::save_session(&session)?;
+                let new_session = Session::new(
+                    format!("cli-{}", turtle_soup::models::now_ts()),
+                    &new_puzzle,
+                );
+                session::save_session(&new_session)?;
+                *shared.lock().unwrap() = Some(new_session.clone());
+                puzzle = new_puzzle;
+                session = new_session;
+                render_intro(&puzzle, &session);
+                continue;
+            }
+            "/hint" => {
+                // 只给方向提示，不泄底、不分级、不带上限（见 01 §5）。
+                let r = with_spinner("生成提示中…", svc.use_hint(&puzzle, &mut session)).await;
+                handle(&shared, &mut session, r.map(|x| x.text))?;
                 continue;
             }
             _ => {}
@@ -300,11 +393,9 @@ fn render_intro(puzzle: &Puzzle, session: &Session) {
     println!("\n=== 海龟汤 · 摸鱼版 ===");
     println!("题目: {}  (D{})", puzzle.title, puzzle.difficulty);
     println!("\n【汤面】{}\n", puzzle.surface);
-    println!("直接输入即提问 | /guess <推理> | /hint | /hint2 | /status | /quit");
+    println!("直接输入即提问 | /guess <推理> | /hint | /switch [id] | /hide | /list | /status | /quit");
     println!(
-        "(提示上限 {} 次，猜底上限 {} 次)  已问 {} 问，进度 {}/{}\n",
-        engine::max_hints(puzzle.fact_count()),
-        engine::MAX_GUESS_ATTEMPTS,
+        "(提示、猜底均不限次)  已问 {} 问，进度 {}/{}\n",
         session.question_count,
         session.hit_facts.len(),
         puzzle.fact_count()
@@ -327,14 +418,18 @@ fn restore_title() {
 }
 
 /// 捕获 Ctrl+C：落盘 + 还原标题 + 退出（见 07 §8）。
-fn spawn_interrupt_handler(shared: SharedSession, session_id: String) {
+/// 会话 id 从 shared 实时取，兼容 `/switch` 中途换局。
+fn spawn_interrupt_handler(shared: SharedSession) {
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
-            if let Some(s) = shared.lock().unwrap().clone() {
+            let id = if let Some(s) = shared.lock().unwrap().clone() {
                 let _ = session::save_session(&s);
-            }
+                s.id
+            } else {
+                String::from("(未知)")
+            };
             restore_title();
-            eprintln!("\n\n已保存对局并退出。下次：soup-cli play --resume {session_id}");
+            eprintln!("\n\n已保存对局并退出。下次：soup-cli play --resume {id}");
             std::process::exit(0);
         }
     });
@@ -353,6 +448,19 @@ fn handle<T: std::fmt::Display>(
             Ok(())
         }
         Err(e) => {
+            // 对局内的预期状态（已达上限 / 本局已结束）按普通提示渲染后继续（见 02 §4.3）。
+            if e.code == ErrorCode::InvalidState {
+                println!("{}", e.message);
+                return Ok(());
+            }
+            // 判定解析失败（重调后仍未拿到 JSON）：友好提示 + 日志位置，不标 `[异常]`（见 07 §4）。
+            if e.code == ErrorCode::ParseFailed {
+                println!("判定失败，请重试。");
+                if let Some(p) = logging::current_log_path() {
+                    println!("       （详见日志：{}）", p.display());
+                }
+                return Ok(());
+            }
             // 不静默降级：明确报错（见 07 §4），并给出日志位置。
             eprintln!("[异常] {e}");
             if let Some(p) = logging::current_log_path() {
@@ -423,12 +531,18 @@ fn build_service() -> Result<GameService, turtle_soup::AppError> {
     GameService::new(&cfg, key)
 }
 
-/// 随机选题：优先未通关的题，其次任意（见 design-doc/01 §6.2）。
+/// 随机选题：先剔除已隐藏的题，再优先未通关的题，其次任意（见 01 §6.2、03 §4）。
 fn pick_random_puzzle(svc: &GameService, difficulty: Option<u8>) -> Result<Puzzle, turtle_soup::AppError> {
     use std::collections::HashSet;
-    let cands = svc.store.candidates(difficulty);
+    let hidden = session::load_hidden();
+    let cands: Vec<&Puzzle> = svc
+        .store
+        .candidates(difficulty)
+        .into_iter()
+        .filter(|p| !hidden.contains(&p.id))
+        .collect();
     if cands.is_empty() {
-        return Err(missing("没有可用题目"));
+        return Err(missing("没有可用题目（可能都被隐藏了，用 /unhide <id> 恢复）"));
     }
     let finished: HashSet<String> = session::list_sessions()
         .unwrap_or_default()

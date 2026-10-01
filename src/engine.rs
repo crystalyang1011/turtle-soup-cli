@@ -31,9 +31,6 @@ pub struct GuessResponse {
 pub const HINT_COST_L1: f32 = 0.5;
 pub const HINT_COST_L2: f32 = 1.0;
 
-/// 猜底次数上限。
-pub const MAX_GUESS_ATTEMPTS: u32 = 3;
-
 /// 基准问数 par(difficulty) = 5 + 3·d，见 01 §3.1。
 pub fn par(difficulty: u8) -> u32 {
     5 + 3 * difficulty.clamp(1, 5) as u32
@@ -116,11 +113,6 @@ pub fn is_win(puzzle: &Puzzle, hit_facts: &[usize]) -> bool {
     valid * 10 >= 7 * total && core_all_hit(puzzle, hit_facts)
 }
 
-/// 失败后的剩余猜底次数。
-pub fn remaining_guesses(failed: u32) -> u32 {
-    MAX_GUESS_ATTEMPTS.saturating_sub(failed)
-}
-
 /// 本轮猜底应判赢还是判负。
 pub fn judge_verdict(puzzle: &Puzzle, hit_facts: &[usize]) -> JudgeVerdict {
     if is_win(puzzle, hit_facts) {
@@ -128,11 +120,6 @@ pub fn judge_verdict(puzzle: &Puzzle, hit_facts: &[usize]) -> JudgeVerdict {
     } else {
         JudgeVerdict::Lose
     }
-}
-
-/// 每局提示次数上限 = ceil(n/2)，见 01 §5。
-pub fn max_hints(fact_count: usize) -> u32 {
-    ((fact_count as f32) / 2.0).ceil() as u32
 }
 
 /// 折算一次提示的 `hints_used` 增量。
@@ -143,25 +130,7 @@ pub fn hint_cost(level: HintLevel) -> f32 {
     }
 }
 
-/// 选择下一条要揭示的事实：先非 core，后 core；全命中返回 None，见 01 §5。
-pub fn pick_hint_fact(puzzle: &Puzzle, hit_facts: &[usize]) -> Option<usize> {
-    let unhit = |i: usize| !hit_facts.contains(&i);
-    // 先非 core
-    for (i, f) in puzzle.key_facts.iter().enumerate() {
-        if !f.core && unhit(i) {
-            return Some(i);
-        }
-    }
-    // 后 core
-    for (i, f) in puzzle.key_facts.iter().enumerate() {
-        if f.core && unhit(i) {
-            return Some(i);
-        }
-    }
-    None
-}
-
-/// 尚未命中的事实文本（供 L1 提示 prompt）。
+/// 尚未命中的事实文本（供方向提示 prompt）。
 pub fn unhit_fact_texts(puzzle: &Puzzle, hit_facts: &[usize]) -> Vec<String> {
     puzzle
         .key_facts
@@ -345,24 +314,6 @@ mod tests {
     }
 
     #[test]
-    fn hint_order_prefers_non_core() {
-        let p = puzzle(5, &[0, 4]);
-        // 首条提示应挑非 core（1）
-        assert_eq!(pick_hint_fact(&p, &[]), Some(1));
-        // 非 core 用尽后挑 core
-        assert_eq!(pick_hint_fact(&p, &[1, 2, 3]), Some(0));
-        // 全命中
-        assert_eq!(pick_hint_fact(&p, &[0, 1, 2, 3, 4]), None);
-    }
-
-    #[test]
-    fn max_hints_ceil_half() {
-        assert_eq!(max_hints(4), 2);
-        assert_eq!(max_hints(5), 3);
-        assert_eq!(max_hints(6), 3);
-    }
-
-    #[test]
     fn parse_judgment_plain_and_fenced() {
         let raw = r#"{"judgment":"yes","reply":"是","hit_facts":[0,0,2]}"#;
         let j = parse_judgment(raw).unwrap();
@@ -394,14 +345,6 @@ mod tests {
         let hits = compute_hits(p.fact_count(), &g.missed_facts);
         assert_eq!(hits, vec![0, 1, 3, 4]);
         assert_eq!(judge_verdict(&p, &hits), JudgeVerdict::Win);
-    }
-
-    #[test]
-    fn remaining_guesses_boundary() {
-        assert_eq!(remaining_guesses(0), 3);
-        assert_eq!(remaining_guesses(2), 1);
-        assert_eq!(remaining_guesses(3), 0);
-        assert_eq!(remaining_guesses(9), 0);
     }
 
     #[test]

@@ -144,13 +144,9 @@ impl Session {
                 ));
             }
             JudgeVerdict::Lose => {
+                // 猜底次数不设上限：失败仅计次、继续本局（见 01 §4）。
                 self.guess_attempts_failed += 1;
-                if engine::remaining_guesses(self.guess_attempts_failed) == 0 {
-                    self.status = SessionStatus::Lost;
-                    self.ended_at = Some(crate::models::now_ts());
-                } else {
-                    self.status = SessionStatus::Playing;
-                }
+                self.status = SessionStatus::Playing;
             }
         }
 
@@ -448,6 +444,67 @@ pub fn record_stats(rec: StatsRecord) -> Result<(), AppError> {
     write_atomic_json(&path, &file)
 }
 
+// ---------------------------------------------------------------------------
+// 隐藏题目（"不再显示"），见 03 §4
+// ---------------------------------------------------------------------------
+
+/// 隐藏题目清单（app data `hidden.json`）。独立于题库存储：
+/// 内置题库只读，隐藏状态单独记，便于随时 `/unhide` 恢复。
+#[derive(Debug, Clone, Serialize, serde::Deserialize, Default)]
+pub struct HiddenFile {
+    #[serde(rename = "schemaVersion", default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub hidden_ids: Vec<String>,
+}
+
+pub fn hidden_path() -> Result<PathBuf, AppError> {
+    Ok(crate::app_data_dir()?.join("hidden.json"))
+}
+
+/// 读取隐藏集合。文件缺失或损坏按空处理（不影响开局，见 07 §4）。
+pub fn load_hidden() -> std::collections::HashSet<String> {
+    let Ok(p) = hidden_path() else {
+        return std::collections::HashSet::new();
+    };
+    if !p.is_file() {
+        return std::collections::HashSet::new();
+    }
+    match std::fs::read_to_string(&p).map_err(AppError::from).and_then(|t| {
+        serde_json::from_str::<HiddenFile>(&t).map_err(AppError::from)
+    }) {
+        Ok(f) => f.hidden_ids.into_iter().collect(),
+        Err(e) => {
+            crate::log_warn!("session", "hidden.json 读取失败，按空处理: {e}");
+            std::collections::HashSet::new()
+        }
+    }
+}
+
+fn save_hidden(ids: &std::collections::HashSet<String>) -> Result<(), AppError> {
+    let mut list: Vec<String> = ids.iter().cloned().collect();
+    list.sort();
+    let file = HiddenFile { schema_version: crate::SCHEMA_VERSION, hidden_ids: list };
+    write_atomic_json(&hidden_path()?, &file)
+}
+
+/// 标记题目"不再显示"（幂等）。
+pub fn hide_puzzle(id: &str) -> Result<(), AppError> {
+    let mut ids = load_hidden();
+    ids.insert(id.to_string());
+    save_hidden(&ids)
+}
+
+/// 取消隐藏；返回是否确实从隐藏集合中移除。
+pub fn unhide_puzzle(id: &str) -> Result<bool, AppError> {
+    let mut ids = load_hidden();
+    let removed = ids.remove(id);
+    if removed {
+        save_hidden(&ids)?;
+    }
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,17 +554,20 @@ mod tests {
     }
 
     #[test]
-    fn guess_fail_returns_to_playing_then_lost() {
+    fn guess_fail_keeps_playing_unlimited() {
         let p = puzzle();
         let mut s = Session::new("s3", &p);
         let r1 = s.apply_guess(&p, vec![0], "差".into());
         assert_eq!(r1.verdict, JudgeVerdict::Lose);
         assert_eq!(s.status, SessionStatus::Playing);
         assert_eq!(s.guess_attempts_failed, 1);
+        // 不限次数：连续失败也不会进 lost。
         s.apply_guess(&p, vec![0], "差".into());
         s.apply_guess(&p, vec![0], "差".into());
-        assert_eq!(s.status, SessionStatus::Lost);
-        assert!(s.ended_at.is_some());
+        s.apply_guess(&p, vec![0], "差".into());
+        assert_eq!(s.status, SessionStatus::Playing);
+        assert_eq!(s.guess_attempts_failed, 4);
+        assert!(s.ended_at.is_none());
     }
 
     #[test]

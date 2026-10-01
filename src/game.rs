@@ -14,6 +14,10 @@ use crate::session::PuzzleStore;
 /// 单局最大提问数（见 02 §3 token 预算）。
 pub const MAX_QUESTIONS: u32 = 60;
 
+/// 结构化输出解析失败时的纠正指令：`temperature=0` 重调一次（见 05 §5）。
+const PARSE_REPAIR_HINT: &str =
+    "你的上一条回复不是合法 JSON。请仅输出一个 JSON 对象，不要包含任何解释、markdown 代码块或括号外的文字。";
+
 /// 对局服务：持有 LLM 客户端与题库。
 #[derive(Clone)]
 pub struct GameService {
@@ -58,6 +62,43 @@ impl GameService {
         msgs
     }
 
+    /// 调 LLM 并解析结构化（JSON）输出。
+    ///
+    /// 首次解析失败时按 05 §5 追加纠正指令、以 `temperature=0` **重调一次**；
+    /// 仍失败则返回**首次**错误（原始 raw 已由 llm 层记日志），不静默降级。
+    async fn complete_parsed<T>(
+        &self,
+        messages: &[ChatMessage],
+        parse: impl Fn(&str) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let raw = self.llm.complete(&self.llm.model, 0.0, messages).await?;
+        match parse(&raw) {
+            Ok(v) => Ok(v),
+            Err(first) => {
+                // 首次不是合法 JSON：记 INFO（仅落文件，不打扰界面），追加纠正指令重调一次。
+                crate::log_info!(
+                    "engine",
+                    "结构化解析失败，追加纠正指令重调一次: raw={:?}",
+                    raw.chars().take(300).collect::<String>()
+                );
+                let mut retry = messages.to_vec();
+                retry.push(ChatMessage::user(PARSE_REPAIR_HINT));
+                let raw2 = self.llm.complete(&self.llm.model, 0.0, &retry).await?;
+                match parse(&raw2) {
+                    Ok(v) => Ok(v),
+                    Err(_) => {
+                        crate::log_error!(
+                            "engine",
+                            "重调后仍解析失败: raw={:?}",
+                            raw2.chars().take(300).collect::<String>()
+                        );
+                        Err(first)
+                    }
+                }
+            }
+        }
+    }
+
     /// 一次问答判定（含反泄底输出校验）。见 01 §2、07 §2.3。
     pub async fn ask_host(
         &self,
@@ -72,20 +113,20 @@ impl GameService {
             return Err(AppError::new(ErrorCode::InvalidState, "提问数已达上限"));
         }
         let text = sanitize_input(text);
+        let rollback_at = session.messages.len();
         session.push_player(text);
         let history = Self::build_history(puzzle, session);
 
-        let raw = self.llm.complete(&self.llm.model, 0.0, &history).await?;
-        let JudgmentResponse { judgment, mut reply, hit_facts } =
-            engine::parse_judgment(&raw).inspect_err(|_| {
-                // 解析失败的原始输出已在 llm 层记落，这里补上下文。
-                crate::log_error!(
-                    "engine",
-                    "判定解析失败 session={}: raw={:?}",
-                    session.id,
-                    raw.chars().take(300).collect::<String>()
-                );
-            })?;
+        // 解析失败会带纠正指令重调一次（见 complete_parsed / 05 §5）。
+        let parsed = self.complete_parsed(&history, engine::parse_judgment).await;
+        let JudgmentResponse { judgment, mut reply, hit_facts } = match parsed {
+            Ok(v) => v,
+            Err(e) => {
+                // 判定失败：回滚未获回应的提问，避免历史残留悬空 user 消息（见 03 §8）。
+                session.messages.truncate(rollback_at);
+                return Err(e);
+            }
+        };
 
         // 输出层泄底检测：命中则替换为固定话术。
         if engine::reply_leaks(puzzle, &reply) {
@@ -110,62 +151,51 @@ impl GameService {
             return Err(AppError::new(ErrorCode::InvalidState, "本局已结束"));
         }
         let guess = sanitize_input(guess);
+        let rollback_at = session.messages.len();
         session.push_player(guess.clone());
         let msgs = [
             ChatMessage::system(prompts::guess_system(puzzle, &guess)),
             ChatMessage::user(guess.clone()),
         ];
-        let raw = self.llm.complete(&self.llm.model, 0.0, &msgs).await?;
-        let g = engine::parse_guess(&raw)?;
+        let g = match self.complete_parsed(&msgs, engine::parse_guess).await {
+            Ok(v) => v,
+            Err(e) => {
+                session.messages.truncate(rollback_at);
+                return Err(e);
+            }
+        };
         let hits = engine::compute_hits(puzzle.fact_count(), &g.missed_facts);
         Ok(session.apply_guess(puzzle, hits, g.comment))
     }
 
-    /// 使用一次提示。L1 走模型（不泄底），L2 直接取事实原文。见 01 §5。
+    /// 使用一次方向提示（不泄底，次数不限，见 01 §5）。
     pub async fn use_hint(
         &self,
         puzzle: &Puzzle,
         session: &mut Session,
-        level: HintLevel,
     ) -> Result<HintResult, AppError> {
         if session.status.is_finished() {
             return Err(AppError::new(ErrorCode::InvalidState, "本局已结束"));
         }
-        let used = session.hint_levels.len() as u32;
-        if used >= engine::max_hints(puzzle.fact_count()) {
-            return Err(AppError::new(ErrorCode::InvalidState, "提示次数已用完"));
-        }
-        match level {
-            HintLevel::L2 => {
-                let idx = engine::pick_hint_fact(puzzle, &session.hit_facts).ok_or_else(|| {
-                    AppError::new(ErrorCode::InvalidState, "所有事实均已命中，无需提示")
-                })?;
-                let text = puzzle.key_facts[idx].text.clone();
-                session.apply_hint(HintLevel::L2, text.clone(), Some(idx));
-                Ok(HintResult { text, hit_fact: Some(idx) })
+        let unhit = engine::unhit_fact_texts(puzzle, &session.hit_facts);
+        let sys = prompts::hint_l1_system(puzzle, &unhit);
+        let raw = self
+            .llm
+            .complete(
+                &self.llm.model,
+                0.7,
+                &[ChatMessage::system(sys), ChatMessage::user("给一句提示")],
+            )
+            .await;
+        // 生成失败降级为固定不泄底文案（见 05 §3）。
+        let text = match raw {
+            Ok(t) if !t.trim().is_empty() && !engine::reply_leaks(puzzle, &t) => {
+                t.trim().chars().take(25).collect()
             }
-            HintLevel::L1 => {
-                let unhit = engine::unhit_fact_texts(puzzle, &session.hit_facts);
-                let sys = prompts::hint_l1_system(puzzle, &unhit);
-                let raw = self
-                    .llm
-                    .complete(
-                        &self.llm.model,
-                        0.7,
-                        &[ChatMessage::system(sys), ChatMessage::user("给一句提示")],
-                    )
-                    .await;
-                // 生成失败降级为固定不泄底文案（见 05 §3）。
-                let text = match raw {
-                    Ok(t) if !t.trim().is_empty() && !engine::reply_leaks(puzzle, &t) => {
-                        t.trim().chars().take(25).collect()
-                    }
-                    _ => "换个角度想想：他的目的可能不是表面那样。".to_string(),
-                };
-                session.apply_hint(HintLevel::L1, text.clone(), None);
-                Ok(HintResult { text, hit_fact: None })
-            }
-        }
+            _ => "换个角度想想：他的目的可能不是表面那样。".to_string(),
+        };
+        session.apply_hint(HintLevel::L1, text.clone(), None);
+        Ok(HintResult { text, hit_fact: None })
     }
 }
 

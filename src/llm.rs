@@ -7,8 +7,8 @@ use crate::models::{AppError, ErrorCode};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-/// 单次请求超时（见 02 §3）。
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+/// 单次请求超时（见 02 §3）。推理模型较慢，上限放到 2 分钟。
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// 失败后重试次数（指数退避）。
 pub const MAX_RETRIES: u32 = 1;
 
@@ -172,7 +172,7 @@ impl LlmClient {
 /// reqwest 错误 → 错误码。
 fn map_reqwest_err(e: reqwest::Error) -> AppError {
     if e.is_timeout() {
-        AppError::new(ErrorCode::Timeout, "请求超时（20s）")
+        AppError::new(ErrorCode::Timeout, "请求超时（120s）")
     } else if e.is_connect() {
         AppError::new(ErrorCode::NetworkError, "网络连接失败")
     } else if e.is_decode() {
