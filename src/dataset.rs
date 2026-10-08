@@ -1,5 +1,5 @@
 //! 数据集直链下载 + 本地 ETL + 断点游标。
-//! 策略见 design-doc/04-题源与ETL.md §3、§5、§7、§8。
+//! 策略见 docs/1-turtle-cli/04-题源与ETL.md §3、§5、§7、§8。
 //!
 //! 数据形态（2026-10 已核验）：中文集为单个 JSONL，**每行一条"猜测-标注对"**
 //! （`id/title/surface/bottom/user_guess/label`）。ETL 先按 `surface`（辅以 `bottom`）

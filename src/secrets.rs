@@ -1,4 +1,4 @@
-//! API Key 解析。来源优先级（见 design-doc/07 §3）：
+//! API Key 解析。来源优先级（见 docs/1-turtle-cli/07 §3）：
 //! 环境变量 `TURTLE_API_KEY` > `config.json` 内联 `api_key`。
 //! v3.0 起只有 CLI，不再使用 OS 凭据库（keyring 依赖已移除）。
 //! 明文只允许出现在本地 gitignore 的 config.json 中，绝不进 git/日志/终端回显。

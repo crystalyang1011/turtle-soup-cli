@@ -1,7 +1,7 @@
 # 海龟汤（CLI 摸鱼版）
 
 > 终端里跑一局海龟汤：你只能问"是/否"，AI 当主持人，把碎片拼成真相。
-> 设计文档见 [`design-doc/`](design-doc/)（**唯一事实源**）。命令行 `cargo run` 即随机来一局。
+> 设计文档见 [`docs/`](docs/)（**唯一事实源**，按阶段分目录）。命令行 `cargo run` 即随机来一局。
 >
 > v3.0 起**只做 CLI**，没有桌面端。
 
@@ -11,7 +11,7 @@
 
 ```
 turtle-soup/
-├── design-doc/          # 设计文档（唯一事实源）
+├── docs/                   # 设计文档（唯一事实源，按阶段分目录）
 ├── src/
 │   ├── bin/soup_cli.rs  # CLI：子命令 + REPL + 渲染 + 摸鱼件
 │   ├── models.rs        # Puzzle / Session / 错误码
@@ -21,7 +21,7 @@ turtle-soup/
 │   ├── llm.rs           # OpenAI 兼容适配层
 │   ├── engine.rs        # 判定/评分/胜负/进度（纯函数，单测覆盖）
 │   ├── session.rs       # 状态机 + 原子持久化 + schema 迁移
-│   ├── dataset.rs       # 分批拉题 + ETL + 断点游标
+│   ├── dataset.rs       # 拉题（直链下载）+ ETL + 断点游标
 │   ├── game.rs          # 对局编排
 │   └── logging.rs       # 本地日志（脱敏）
 ├── scripts/etl_turtlebench.py   # 开发期 ETL（清洗规则事实源）

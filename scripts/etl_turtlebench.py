@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """海龟汤题源 ETL（开发期预拉 + 入库）。
 
-本脚本是**清洗规则的唯一事实源**（见 design-doc/04-题源与ETL.md §7）：
+本脚本是**清洗规则的唯一事实源**（见 docs/1-turtle-cli/04-题源与ETL.md §7）：
 运行时 dataset.rs 复用同一套规则，并共用 etl_rules.json。
 
 数据形态：中文集为单个 JSONL，每行一条「猜测-标注对」

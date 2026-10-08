@@ -1,4 +1,4 @@
-//! 配置加载与校验。见 design-doc/02-技术架构.md §3、07 §3、03 §4。
+//! 配置加载与校验。见 docs/1-turtle-cli/02-技术架构.md §3、07 §3、03 §4。
 //! 配置放工作目录根的 `config.json`（`.env` 理念，允许内联 Key，已 gitignore）。
 // by AI.Coding
 

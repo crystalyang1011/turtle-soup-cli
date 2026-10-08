@@ -1,6 +1,6 @@
 # 海龟汤 · CLI 摸鱼版（纯 Rust 单二进制）
 # v3.0 起只做 CLI：无 Tauri / 无前端。
-# 架构见 design-doc/02-技术架构.md
+# 架构见 docs/1-turtle-cli/02-技术架构.md
 [package]
 name = "turtle-soup"
 description = "终端海龟汤摸鱼游戏（CLI）"

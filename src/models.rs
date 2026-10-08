@@ -1,5 +1,5 @@
 //! 数据结构定义：Puzzle / Session / 错误码 / invoke DTO。
-//! 与 design-doc/03-数据结构与持久化.md 一一对应。
+//! 与 docs/1-turtle-cli/03-数据结构与持久化.md 一一对应。
 // by AI.Coding
 
 use serde::{Deserialize, Serialize};
@@ -42,7 +42,7 @@ impl From<serde_json::Error> for AppError {
     }
 }
 
-/// 错误码枚举，见 design-doc/02-技术架构.md §4.1。
+/// 错误码枚举，见 docs/1-turtle-cli/02-技术架构.md §4.1。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
@@ -79,7 +79,7 @@ impl ErrorCode {
 // ---------------------------------------------------------------------------
 
 /// 一条关键事实。`core` 标记因果链的「因」与「果」，构成胜负硬条件。
-/// 见 design-doc/03-数据结构与持久化.md §1。
+/// 见 docs/1-turtle-cli/03-数据结构与持久化.md §1。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KeyFact {
     pub text: String,

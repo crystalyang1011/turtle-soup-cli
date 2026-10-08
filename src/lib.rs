@@ -1,7 +1,7 @@
 //! 海龟汤摸鱼游戏 · CLI 版核心库。
 //!
 //! 纯 Rust，无 GUI：`engine` / `session` / `llm` / `dataset` / `game` 全部可测，
-//! 由 `soup-cli` 二进制驱动（见 design-doc/02-技术架构.md）。
+//! 由 `soup-cli` 二进制驱动（见 docs/1-turtle-cli/02-技术架构.md）。
 // by AI.Coding
 
 pub mod config;
@@ -24,10 +24,10 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// 旧版系统 app data 目录名（仅用于一次性迁移，见 `migrate_legacy_data_dir`）。
 pub const APP_DIR_NAME: &str = "turtle-soup";
 
-/// 运行时数据目录名（**项目根**下，见 design-doc/03 §4）。
+/// 运行时数据目录名（**项目根**下，见 docs/1-turtle-cli/03 §4）。
 pub const DATA_DIR_NAME: &str = "data";
 
-/// 返回运行时数据目录：**项目根下的 `data/`**（见 design-doc/03 §4）。
+/// 返回运行时数据目录：**项目根下的 `data/`**（见 docs/1-turtle-cli/03 §4）。
 ///
 /// 数据随仓库/二进制落地，便携、可被 `.gitignore` 排除，不再写入系统 app data。
 /// 首次运行时若检测到旧版系统 app data 目录，则整体迁移过来（保留题库/配置/对局）。
@@ -87,7 +87,7 @@ pub fn project_root() -> std::path::PathBuf {
 }
 
 /// 出厂内置题库路径：项目根下 `assets/puzzles.json`
-/// （开发期由 ETL 预拉筛选，见 design-doc/04-题源与ETL.md §5）。
+/// （开发期由 ETL 预拉筛选，见 docs/1-turtle-cli/04-题源与ETL.md §5）。
 pub fn builtin_puzzles_path() -> std::path::PathBuf {
     project_root().join("assets").join("puzzles.json")
 }

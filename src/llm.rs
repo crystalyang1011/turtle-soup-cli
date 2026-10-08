@@ -1,5 +1,5 @@
 //! OpenAI 兼容 LLM 适配层（纯 HTTP，不依赖 Tauri）。
-//! 协议与错误映射见 design-doc/02-技术架构.md §3、§4.1 与 07 §4。
+//! 协议与错误映射见 docs/1-turtle-cli/02-技术架构.md §3、§4.1 与 07 §4。
 // by AI.Coding
 
 use crate::config::AppConfig;

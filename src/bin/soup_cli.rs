@@ -1,5 +1,5 @@
 //! soup-cli：海龟汤终端摸鱼版（唯一入口）。
-//! 子命令见 design-doc/02 §4；摸鱼件见 design-doc/06。
+//! 子命令见 docs/1-turtle-cli/02 §4；摸鱼件见 docs/1-turtle-cli/06。
 // by AI.Coding
 
 use std::io::{self, IsTerminal, Write};
@@ -33,7 +33,7 @@ async fn main() {
 
 async fn run() -> Result<(), turtle_soup::AppError> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // 不带参数 = 随机一局（见 design-doc/02 §4.1）。
+    // 不带参数 = 随机一局（见 docs/1-turtle-cli/02 §4.1）。
     let cmd = args.first().map(String::as_str).unwrap_or("play");
     let rest = args.get(1..).unwrap_or(&[]);
     match cmd {

@@ -1,4 +1,4 @@
-//! 三段 prompt 全文（唯一事实源是 design-doc/05-Prompt设计.md）。
+//! 三段 prompt 全文（唯一事实源是 docs/1-turtle-cli/05-Prompt设计.md）。
 //! 改动此文件必须同步回写文档并递增 `PROMPT_VERSION`（见 08 §5）。
 // by AI.Coding
 

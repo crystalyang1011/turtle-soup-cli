@@ -5,7 +5,7 @@ node_modules/
 web/dist/
 dist/
 
-# 本地配置与私有数据（见 design-doc/07-安全与异常.md §3）
+# 本地配置与私有数据（见 docs/1-turtle-cli/07-安全与异常.md §3）
 config.json
 data/
 raw/

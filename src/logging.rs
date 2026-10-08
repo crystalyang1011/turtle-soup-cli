@@ -1,5 +1,5 @@
 //! 本地日志：落到项目根 `data/logs/app.log`，诊断判定/网络异常。
-//! 见 design-doc/07-安全与异常.md §7。
+//! 见 docs/1-turtle-cli/07-安全与异常.md §7。
 //! **绝不写入 api_key / 汤底**；LLM 原始响应按需截断记录（解析失败时是关键线索）。
 // by AI.Coding
 
