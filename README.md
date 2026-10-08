@@ -76,7 +76,8 @@ cargo run -- play classic-001          # 指定题
 cargo run -- play --difficulty 3       # 按难度随机
 cargo run -- list                      # 看题库
 cargo run -- ask classic-001 "他在打嗝吗"   # 单次判定（脚本/冒烟）
-cargo run -- fetch                     # 拉新题（100 条）
+cargo run -- fetch                     # 拉新题（下载并清洗 TurtleBench 中文题源）
+cargo run -- fetch --mirror            # 国内网络走 hf-mirror 镜像
 cargo run -- config                    # 打印配置与日志路径
 ```
 

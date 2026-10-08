@@ -27,10 +27,16 @@
 
 数据集没有现成的 key_facts 字段，这是 ETL 的关键一步，也是整局玩法（进度/提示/胜负）的锚点：
 
-1. TurtleBench 中被人工标注为"正确（T）"的玩家猜测 = **真人验证过的真命题**；
+1. TurtleBench 被人工标注为"正确（T）"的玩家猜测 = **真人验证过的真命题**。
+   **数据形态（2026-10 已核验）**：CH/EN 各一个 JSONL，**每行一条"猜测-标注对"**，字段
+   `id / title / surface / bottom / user_guess / label`（`label ∈ {T,F}`）。因此必须先
+   **按 `surface`（辅以 `bottom`）分组**，再收集该故事下 `label=="T"` 的 `user_guess`。
+   中文集全量 1,532 行、**唯一故事 32 个**（见 §6.1）。
 2. 同一故事的 T 标注猜测去重、合并、改写为事实句 → `key_facts`（AI 仅做合并改写，产物可逐条人工核对）；
 3. **每条 fact 打 `core` 标记**：因果链的"因"与"果"标 `core=true`（1–2 条），其余 `false`（见 [01 §4.1](01-游戏设计.md)）；
-4. T 标注不足 **4 条**的题**不入库**（v1.0 是 3 条，配合 [01 §4.2](01-游戏设计.md) 收紧为 4，避免"3 条必须全中"的退化；NR 上限 6 条，超出合并同类项）；
+4. T 标注不足 **4 条**的题**不入库**（v1.0 是 3 条，配合 [01 §4.2](01-游戏设计.md) 收紧为 4，避免"3 条必须全中"的退化）；
+   中文集每故事 T 数 5–54，**上限 6 条**：运行时 ETL 无 LLM、无法做语义"合并同类项"，按去重后的
+   原序**机械截断到 6 条**（首条标 `core=true`），语义合并与 core 校准留待人工/AI 后处理；
 5. **质量校验（v1.0 缺失）**：入库前对每条 fact 做可判定性自检——
    - 是否独立可判定（可被单个是/否回答）；
    - 是否与汤底矛盾（自洽性）；
@@ -55,16 +61,19 @@
 
 ---
 
-## 5. 数据获取策略：分批拉取，不打包全量
+## 5. 数据获取策略：直链下载 JSONL，不打包全量
 
-已拍板，2026-09-29：
+已拍板，2026-09-29；**2026-10 改版**：改用仓库文件**直链下载**，废弃 datasets-server rows API。
 
 1. 数据集**不打包进发行版**。出厂仅内置开发期预拉、人工筛选的小批题（MVP 5 题），保证开箱即玩、离线可玩。
-2. 应用内**"拉取新题"按钮**（设置页）：用户手动触发，每批 100 条原始记录 → 本地 ETL 清洗（字段映射 + key_facts 挖掘 + 血腥/色情过滤）→ 直接入库。个人工具不做审核 UI（T 标注挖掘已保质量底线），题库页提供单条删除。
-3. **断点游标**：本地记录已消费的记录 id / offset，下次接着拉；幂等，重跑不重复入库。
-4. **原始数据先落盘再清洗**：缓存到 app data 的 `raw/` 目录，ETL 可重跑、不重复下载。
-5. **拉取端点可配置**：默认 HuggingFace 官方，国内网络可切 `hf-mirror.com` 镜像（HF 国内直连不稳，已知坑）。
-6. **体积事实**：TurtleBench1.5k 官方页面标称全量 2.49 MB，"超级大"不成立；分批的意义在于可控可审、发行包不膨胀。
+2. 应用内 **`soup-cli fetch`**：用户手动触发，下载中文集 JSONL → 本地 ETL 清洗（按故事分组 + 字段映射 + key_facts 挖掘 + 血腥/色情过滤）→ 直接入库。个人工具不做审核 UI（T 标注挖掘已保质量底线），题库页提供单条删除。
+3. **断点游标**：本地记录已消费的故事 id（`consumed_ids`）与计数（`offset`），幂等，重跑不重复入库。
+4. **原始数据先落盘再清洗**：缓存到 app data 的 `raw/` 目录，ETL 可重跑。
+5. **拉取端点（实测可用）**：
+   - 官方：`https://huggingface.co/datasets/Duguce/TurtleBench1.5k/resolve/main/chinese/zh_data-00000-of-00001.jsonl`
+   - 镜像：`https://hf-mirror.com/datasets/Duguce/TurtleBench1.5k/resolve/main/chinese/zh_data-00000-of-00001.jsonl`（`--mirror` 切换）
+   - **为何不用 rows API**：`datasets-server.huggingface.co` 国内直连超时；`hf-mirror.com/datasets-server/rows` 实测返回 **401**。直链文件两个源都可达。
+6. **体积事实**：中文集 JSONL 约 1.03 MB，全量一次下载即可，无需分页。
 
 ---
 
@@ -72,9 +81,9 @@
 
 ### 6.1 风险
 
-1. **1,532 是"猜测-标注对"数，不是题目数**；唯一故事数未核验。
-2. 有效题量可能枯竭（清洗后只剩几十道甚至更少）。
-3. key_facts 依赖 T 标注质量，标注噪声会传导到判定。
+1. **1,532 是"猜测-标注对"数，不是题目数**；**已核验：中文集唯一故事仅 32 个**（`surface` 去重）。
+2. 有效题量可能枯竭：32 个故事里 T 数 <4 的会再被丢弃，实际入库题量有限。
+3. key_facts 依赖 T 标注质量，标注噪声会传导到判定；且 >6 条被机械截断，顺序未必是因果主链。
 
 ### 6.2 兜底方案（按触发条件）
 
@@ -85,12 +94,12 @@
 | 有效题量枯竭（玩完无题可拉） | 扩展题源：其他社区海龟汤数据集 / 允许用户手工导入（粘贴 surface+truth，工具辅助拆 facts） |
 | 数据字段与预期不符 | ETL 以真实数据为准，字段映射写成可配置；不通过则换题源 |
 
-### 6.3 首次拉取必须验证的清单（M2 前置）
+### 6.3 首次拉取验证清单（M2 前置）
 
-- [ ] 数据集真实唯一故事数
-- [ ] T 标注覆盖率（平均每故事几条 T）
-- [ ] stories.json 字段名与编码（是否中文、是否分文件）
-- [ ] 许可文件是否随仓库提供
+- [x] 数据集真实唯一故事数：中文集 **32**
+- [ ] T 标注覆盖率（平均每故事几条 T）：中文集 5–54，平均约 14
+- [x] 字段与编码：`chinese/zh_data-00000-of-00001.jsonl`，UTF-8，`id/title/surface/bottom/user_guess/label`
+- [x] 许可文件随仓库提供：`LICENSE`（Apache-2.0）
 
 ---
 
@@ -111,16 +120,19 @@ raw/ ──> [field map] ──> [filter gore/nsfw] ──> [mine key_facts] ─
 
 ---
 
-## 8. 字段映射（预期，待真实数据核验）
+## 8. 字段映射（已按真实 JSONL 核验，2026-10）
+
+原始 JSONL 每行一条猜测记录：`{ id, title, surface, bottom, user_guess, label }`。
+ETL 先按 `surface`（辅以 `bottom`）分组，再取组内 `label=="T"` 的 `user_guess` 作为 key_facts 候选。
 
 | 目标字段 | 来源 | 说明 |
 |---|---|---|
-| id | 生成 | `classic-xxx` / `ai-xxx` / `dt-xxx`（DeepTurtle）前缀区分来源 |
-| title | AI 生成 或 取故事摘要 | 数据集可能无标题 |
-| surface | TurtleBench `surface` | 汤面，公开可下发 |
-| truth | TurtleBench `bottom` | 汤底，仅 Rust 侧可见 |
-| key_facts | T 标注挖掘 | 见 §3，4–6 条，含 core 标记 |
-| difficulty | 人工按 [01 §6.1](01-游戏设计.md) 打 | 数据集无此字段 |
-| tags | 人工/AI 描述性标签 | 仅描述（过滤口径见 §4） |
-| source | 数据集来源 | `builtin / ai / dataset` |
-| created_at | 入库时间戳 | AI 题溯源用 |
+| id | 生成 | `ds-<surface 稳定哈希>`（故事级；同一故事多行共享） |
+| title | JSONL `title` | 故事标题（可能为空） |
+| surface | JSONL `surface` | 汤面，公开可下发（分组键） |
+| truth | JSONL `bottom` | 汤底，仅 Rust 侧可见 |
+| key_facts | 组内 `label=="T"` 的 `user_guess` | 见 §3，去重后 4–6 条（>6 机械截断），首条 `core=true` |
+| difficulty | `fetch --difficulty` 参数 | 数据集无此字段 |
+| tags | 固定 `["dataset"]` | 仅描述（过滤口径见 §4） |
+| source | 固定 `dataset` | 来源标记 |
+| created_at | 入库时间戳 | 溯源用 |

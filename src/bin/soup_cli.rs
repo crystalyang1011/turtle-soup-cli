@@ -63,7 +63,7 @@ fn print_help() {
          \x20 soup-cli play [puzzle_id] [--difficulty N]  指定题 / 按难度随机\n\
          \x20 soup-cli play --resume <session_id>         继续未完成的对局\n\
          \x20 soup-cli ask <puzzle_id> <问题...>          单次判定（脚本/冒烟）\n\
-         \x20 soup-cli fetch [--difficulty N] [--mirror]  拉取一批新题（100 条）\n\
+         \x20 soup-cli fetch [--difficulty N] [--mirror]  拉取并清洗 TurtleBench 中文题源\n\
          \x20 soup-cli config                            打印配置与日志路径\n\
          \n对局内: 直接输入即提问 | /guess <推理> | /hint | /switch [id] | /hide | /list | /status | /quit\n\
          \nAPI Key: 环境变量 TURTLE_API_KEY 或 config.json 的 api_key。"
@@ -160,10 +160,9 @@ async fn cmd_fetch(args: &[String]) -> Result<(), turtle_soup::AppError> {
     )
     .await?;
     println!(
-        "拉取 {} 条，入库 {} 题{}。当前题库共 {} 题。",
+        "题源共 {} 个故事，本次新增入库 {} 题。当前题库共 {} 题。",
         outcome.fetched,
         outcome.added,
-        if outcome.done { "（已到末尾）" } else { "" },
         store.len()
     );
     Ok(())

@@ -2,6 +2,7 @@
   "comment": "ETL 清洗规则（python 与 Rust 两端共用，源头见 04 §7）",
   "minFacts": 4,
   "maxFacts": 6,
+  "truncateOverMax": true,
   "minCoreFacts": 1,
   "maxCoreFacts": 2,
   "blockedKeywords": [

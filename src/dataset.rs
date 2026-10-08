@@ -1,23 +1,29 @@
-//! 数据集分批拉取 + 本地 ETL + 断点游标。
-//! 策略见 design-doc/04-题源与ETL.md §5、§7、§8。
+//! 数据集直链下载 + 本地 ETL + 断点游标。
+//! 策略见 design-doc/04-题源与ETL.md §3、§5、§7、§8。
 //!
-//! 说明：数据集真实字段格式尚未核验（04 §6.3），此处按「预期字段映射」实现，
-//! 解析层对字段缺失保持宽容，核验真实数据后只需调整 `RawStory::from_value`。
+//! 数据形态（2026-10 已核验）：中文集为单个 JSONL，**每行一条"猜测-标注对"**
+//! （`id/title/surface/bottom/user_guess/label`）。ETL 先按 `surface`（辅以 `bottom`）
+//! 分组，再收集组内 `label=="T"` 的 `user_guess` 作为 key_facts 候选。
 // by AI.Coding
 
 use crate::models::{AppError, ErrorCode, KeyFact, Puzzle};
 use crate::session::{write_atomic_json, PuzzleStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// 每批拉取条数（见 04 §5）。
-pub const BATCH_SIZE: usize = 100;
-/// 默认端点（HuggingFace datasets-server rows API）。
+/// key_facts 条数下限（与 scripts/etl_rules.json 保持一致，见 04 §3）。
+pub const MIN_FACTS: usize = 4;
+/// key_facts 条数上限；超出按原序机械截断（与 scripts/etl_rules.json 保持一致，见 04 §3）。
+pub const MAX_FACTS: usize = 6;
+
+/// 官方直链（中文集 JSONL，见 04 §5.5）。
 pub const DEFAULT_ENDPOINT: &str =
-    "https://datasets-server.huggingface.co/rows?dataset=Duguce%2FTurtleBench1.5k&config=default&split=train";
-/// 国内镜像提示（见 04 §5.5）。
-pub const MIRROR_ENDPOINT: &str = "https://hf-mirror.com";
+    "https://huggingface.co/datasets/Duguce/TurtleBench1.5k/resolve/main/chinese/zh_data-00000-of-00001.jsonl";
+/// 国内镜像直链（`--mirror`，见 04 §5.5）。
+pub const MIRROR_ENDPOINT: &str =
+    "https://hf-mirror.com/datasets/Duguce/TurtleBench1.5k/resolve/main/chinese/zh_data-00000-of-00001.jsonl";
 
 /// ETL 过滤词（**只过滤血腥/色情，不过滤恐怖/灵异**，见 04 §4）。
 pub const BLOCKED_KEYWORDS: &[&str] = &[
@@ -77,30 +83,54 @@ impl FetchCursor {
 }
 
 // ---------------------------------------------------------------------------
-// 原始记录与映射
+// 原始记录与分组
 // ---------------------------------------------------------------------------
 
-/// 数据集原始故事记录（staging 预期结构）。
+/// JSONL 单行（一条"猜测-标注对"）。字段名兼容旧 rows API 包裹与别名。
 #[derive(Debug, Clone)]
-pub struct RawStory {
-    pub id: String,
+pub struct RawGuess {
+    pub title: String,
     pub surface: String,
     pub bottom: String,
-    /// 人工标注为「正确（T）」的玩家猜测，用于挖掘 key_facts（见 04 §3）。
-    pub positive_guesses: Vec<String>,
+    pub user_guess: String,
+    pub label: String,
 }
 
-impl RawStory {
-    /// 从 datasets-server 的 row JSON 宽容解析。
-    /// 兼容 `row` 包裹与扁平结构、`surface`/`bottom` 字段名。
+impl RawGuess {
+    /// 从一行 JSON（已解析）宽容解析；缺 surface/bottom 视为无效行。
     pub fn from_value(v: &Value) -> Option<Self> {
         let row = v.get("row").unwrap_or(v);
         let surface = str_field(row, &["surface", "story", "puzzle", "soup_surface"])?;
         let bottom = str_field(row, &["bottom", "truth", "answer", "soup_bottom"])?;
-        let id = str_field(row, &["id", "sid", "story_id"])
-            .unwrap_or_else(|| format!("ds-{}", short_hash(&surface)));
-        let positive_guesses = collect_positive(row);
-        Some(Self { id, surface, bottom, positive_guesses })
+        let title = str_field(row, &["title", "name"]).unwrap_or_default();
+        let user_guess =
+            str_field(row, &["user_guess", "guess", "question"]).unwrap_or_default();
+        let label = str_field(row, &["label", "verdict"]).unwrap_or_default();
+        Some(Self { title, surface, bottom, user_guess, label })
+    }
+
+    /// 是否人工标注为"正确"（T）。见 04 §3。
+    pub fn is_correct(&self) -> bool {
+        matches!(
+            self.label.trim().to_ascii_uppercase().as_str(),
+            "T" | "TRUE" | "YES" | "正确"
+        )
+    }
+}
+
+/// 一条故事：汤面/汤底 + 组内 T 标注猜测（key_facts 候选，见 04 §3、§8）。
+#[derive(Debug, Clone)]
+pub struct RawStory {
+    pub title: String,
+    pub surface: String,
+    pub bottom: String,
+    pub positive_guesses: Vec<String>,
+}
+
+impl RawStory {
+    /// 故事级稳定 id：`ds-<surface 稳定哈希>`（见 04 §8）。
+    pub fn id(&self) -> String {
+        format!("ds-{}", short_hash(&self.surface))
     }
 }
 
@@ -113,16 +143,53 @@ fn str_field(v: &Value, keys: &[&str]) -> Option<String> {
     })
 }
 
-/// 收集标注为正确的猜测（字段名待核验，容忍多种形态）。
-fn collect_positive(row: &Value) -> Vec<String> {
+/// 解析 JSONL 文本为逐行猜测记录。返回 (记录, 非法行数)。
+pub fn parse_jsonl(text: &str) -> (Vec<RawGuess>, usize) {
     let mut out = Vec::new();
-    for key in ["positive_guesses", "truths", "t_guesses", "correct_guesses"] {
-        if let Some(arr) = row.get(key).and_then(|x| x.as_array()) {
-            for item in arr {
-                if let Some(s) = item.as_str() {
-                    out.push(s.trim().to_string());
-                }
+    let mut bad = 0usize;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Value>(line) {
+            Ok(v) => match RawGuess::from_value(&v) {
+                Some(g) => out.push(g),
+                None => bad += 1,
+            },
+            Err(_) => bad += 1,
+        }
+    }
+    (out, bad)
+}
+
+/// 把逐行猜测按故事分组（`surface` + `bottom` 为主键），收集 `label=="T"` 的猜测。
+/// 组内去重、保持原序（见 04 §3、§8）。
+pub fn group_stories(guesses: &[RawGuess]) -> Vec<RawStory> {
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut out: Vec<RawStory> = Vec::new();
+    for g in guesses {
+        let key = format!("{}\u{1}{}", g.surface, g.bottom);
+        let idx = match index.get(&key) {
+            Some(i) => *i,
+            None => {
+                let i = out.len();
+                index.insert(key, i);
+                out.push(RawStory {
+                    title: g.title.clone(),
+                    surface: g.surface.clone(),
+                    bottom: g.bottom.clone(),
+                    positive_guesses: Vec::new(),
+                });
+                i
             }
+        };
+        let guess = g.user_guess.trim();
+        if g.is_correct()
+            && !guess.is_empty()
+            && !out[idx].positive_guesses.iter().any(|x| x == guess)
+        {
+            out[idx].positive_guesses.push(guess.to_string());
         }
     }
     out
@@ -143,9 +210,8 @@ pub fn is_blocked(text: &str) -> bool {
     BLOCKED_KEYWORDS.iter().any(|k| text.contains(k))
 }
 
-/// ETL：raw → Puzzle。key_facts 由正例猜测去重合并而成（此处仅做机械去重，
-/// 语义合并改写由开发期脚本 + 人工负责，见 04 §3、§7）。
-/// 不足 4 条不入库；过滤命中直接丢弃。
+/// ETL：RawStory → Puzzle。key_facts 取 T 标注去重后的原序，不足 4 条丢弃，
+/// 超过 6 条机械截断（首条 core=true）；语义合并改写由人工/AI 后处理负责（见 04 §3、§7）。
 pub fn etl_to_puzzle(raw: &RawStory, difficulty: u8) -> Option<Puzzle> {
     if is_blocked(&raw.surface) || is_blocked(&raw.bottom) {
         return None;
@@ -158,17 +224,23 @@ pub fn etl_to_puzzle(raw: &RawStory, difficulty: u8) -> Option<Puzzle> {
         }
         facts.push(g.to_string());
     }
-    if !(4..=6).contains(&facts.len()) {
+    if facts.len() < MIN_FACTS {
         return None;
     }
+    facts.truncate(MAX_FACTS);
     let key_facts = facts
         .into_iter()
         .enumerate()
         .map(|(i, text)| KeyFact { text, core: i == 0 })
         .collect();
+    let title = if raw.title.trim().is_empty() {
+        raw.surface.chars().take(12).collect()
+    } else {
+        raw.title.trim().to_string()
+    };
     let puzzle = Puzzle {
-        id: format!("ds-{}", raw.id),
-        title: raw.surface.chars().take(12).collect(),
+        id: raw.id(),
+        title,
         surface: raw.surface.clone(),
         truth: raw.bottom.clone(),
         key_facts,
@@ -194,7 +266,7 @@ pub fn cache_raw(batch_index: usize, rows: &[Value]) -> Result<PathBuf, AppError
 // 拉取
 // ---------------------------------------------------------------------------
 
-/// 数据集客户端。
+/// 数据集客户端（直链下载 JSONL）。
 #[derive(Clone)]
 pub struct DatasetClient {
     http: reqwest::Client,
@@ -204,18 +276,17 @@ pub struct DatasetClient {
 impl DatasetClient {
     pub fn new(endpoint: impl Into<String>) -> Result<Self, AppError> {
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(60))
             .build()
             .map_err(|e| AppError::new(ErrorCode::Other, format!("HTTP 初始化失败: {e}")))?;
         Ok(Self { http, endpoint: endpoint.into() })
     }
 
-    /// 拉取一批（offset 起始，length=BATCH_SIZE）。返回原始 row 数组。
-    pub async fn fetch_batch(&self, offset: usize) -> Result<Vec<Value>, AppError> {
-        let url = format!("{}&offset={}&length={}", self.endpoint, offset, BATCH_SIZE);
+    /// 直链下载完整 JSONL 文本（约 1 MB）。
+    pub async fn fetch_all(&self) -> Result<String, AppError> {
         let resp = self
             .http
-            .get(&url)
+            .get(&self.endpoint)
             .send()
             .await
             .map_err(|e| AppError::new(ErrorCode::NetworkError, format!("拉取失败: {e}")))?;
@@ -225,41 +296,64 @@ impl DatasetClient {
                 format!("拉取失败: HTTP {}", resp.status()),
             ));
         }
-        let json: Value = resp
-            .json()
+        resp.text()
             .await
-            .map_err(|e| AppError::new(ErrorCode::ParseFailed, format!("拉取解析失败: {e}")))?;
-        Ok(json
-            .get("rows")
-            .and_then(|r| r.as_array())
-            .cloned()
-            .unwrap_or_default())
+            .map_err(|e| AppError::new(ErrorCode::ParseFailed, format!("响应读取失败: {e}")))
     }
 
-    /// 拉取一批 → 落盘缓存 → ETL → 入库。返回实际新增题数与原始条数。见 04 §5.2。
+    /// 下载 → 落盘缓存 → 分组 → ETL → 入库。返回故事总数与实际新增题数。见 04 §5。
     pub async fn pull_into(
         &self,
         store: &mut PuzzleStore,
         cursor: &mut FetchCursor,
         difficulty: u8,
     ) -> Result<PullOutcome, AppError> {
-        let rows = self.fetch_batch(cursor.offset).await?;
-        if rows.is_empty() {
-            return Ok(PullOutcome { fetched: 0, added: 0, done: true });
-        }
-        cache_raw(cursor.offset / BATCH_SIZE.max(1), &rows)?;
+        let text = self.fetch_all().await?;
 
+        // 逐行解析：同时保留原始 JSON（缓存用）与有效猜测记录。
+        let mut rows: Vec<Value> = Vec::new();
+        let mut guesses: Vec<RawGuess> = Vec::new();
+        let mut bad = 0usize;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Value>(line) {
+                Ok(v) => {
+                    if let Some(g) = RawGuess::from_value(&v) {
+                        guesses.push(g);
+                    } else {
+                        bad += 1;
+                    }
+                    rows.push(v);
+                }
+                Err(_) => bad += 1,
+            }
+        }
+        if rows.is_empty() {
+            return Err(AppError::new(
+                ErrorCode::ParseFailed,
+                "远程数据集为空或格式不符（预期 JSONL）",
+            ));
+        }
+        cache_raw(0, &rows)?;
+        if bad > 0 {
+            crate::log_warn!("dataset", "拉取跳过 {bad} 行非法 JSONL");
+        }
+
+        let stories = group_stories(&guesses);
+        let fetched = stories.len();
         let mut puzzles = Vec::new();
         let mut consumed = Vec::new();
-        for row in &rows {
-            if let Some(raw) = RawStory::from_value(row) {
-                consumed.push(raw.id.clone());
-                if cursor.is_consumed(&raw.id) {
-                    continue; // 幂等：已消费跳过
-                }
-                if let Some(p) = etl_to_puzzle(&raw, difficulty) {
-                    puzzles.push(p);
-                }
+        for s in &stories {
+            let id = s.id();
+            consumed.push(id.clone());
+            if cursor.is_consumed(&id) {
+                continue; // 幂等：已消费跳过
+            }
+            if let Some(p) = etl_to_puzzle(s, difficulty) {
+                puzzles.push(p);
             }
         }
         let added = store.add_user_puzzles(puzzles);
@@ -267,15 +361,16 @@ impl DatasetClient {
         cursor.mark_consumed(&consumed);
         cursor.save()?;
 
-        Ok(PullOutcome { fetched: rows.len(), added, done: rows.len() < BATCH_SIZE })
+        Ok(PullOutcome { fetched, added })
     }
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PullOutcome {
+    /// 解析出的唯一故事数。
     pub fetched: usize,
+    /// 实际新增入库题数。
     pub added: usize,
-    pub done: bool,
 }
 
 #[cfg(test)]
@@ -284,7 +379,7 @@ mod tests {
 
     fn raw(surface: &str, bottom: &str, guesses: usize) -> RawStory {
         RawStory {
-            id: "r1".into(),
+            title: String::new(),
             surface: surface.into(),
             bottom: bottom.into(),
             positive_guesses: (0..guesses).map(|i| format!("fact {i}")).collect(),
@@ -304,7 +399,13 @@ mod tests {
     fn etl_requires_at_least_four_facts() {
         assert!(etl_to_puzzle(&raw("s", "t", 3), 2).is_none());
         assert!(etl_to_puzzle(&raw("s", "t", 4), 2).is_some());
-        assert!(etl_to_puzzle(&raw("s", "t", 7), 2).is_none()); // >6 也放弃
+    }
+
+    #[test]
+    fn etl_truncates_over_six_facts() {
+        let p = etl_to_puzzle(&raw("s", "t", 9), 2).unwrap();
+        assert_eq!(p.key_facts.len(), MAX_FACTS);
+        assert_eq!(p.key_facts.iter().filter(|f| f.core).count(), 1);
     }
 
     #[test]
@@ -333,17 +434,61 @@ mod tests {
     }
 
     #[test]
-    fn parse_from_dataset_row_shapes() {
-        let v = serde_json::json!({ "row": { "surface": "汤面", "bottom": "汤底",
-            "positive_guesses": ["g1", "g2"] } });
-        let r = RawStory::from_value(&v).unwrap();
-        assert_eq!(r.surface, "汤面");
-        assert_eq!(r.positive_guesses.len(), 2);
-        assert!(r.id.starts_with("ds-"));
+    fn parse_jsonl_groups_by_story_and_keeps_only_t() {
+        let text = concat!(
+            r#"{"id":0,"title":"电梯","surface":"S1","bottom":"B1","user_guess":"g1","label":"T"}"#,
+            "\n",
+            r#"{"id":1,"title":"电梯","surface":"S1","bottom":"B1","user_guess":"g2","label":"F"}"#,
+            "\n",
+            r#"{"id":2,"title":"电梯","surface":"S1","bottom":"B1","user_guess":"g1","label":"T"}"#,
+            "\n",
+            r#"{"id":3,"title":"山顶","surface":"S2","bottom":"B2","user_guess":"g3","label":"T"}"#,
+            "\n",
+            "not-json",
+        );
+        let (guesses, bad) = parse_jsonl(text);
+        assert_eq!(guesses.len(), 4);
+        assert_eq!(bad, 1);
+        let stories = group_stories(&guesses);
+        assert_eq!(stories.len(), 2);
+        assert_eq!(stories[0].surface, "S1");
+        assert_eq!(stories[0].positive_guesses, vec!["g1"]); // F 剔除、重复去重
+        assert_eq!(stories[1].positive_guesses, vec!["g3"]);
     }
 
     #[test]
-    fn parse_missing_fields_returns_none() {
-        assert!(RawStory::from_value(&serde_json::json!({ "x": 1 })).is_none());
+    fn raw_guess_requires_surface_and_bottom() {
+        assert!(RawGuess::from_value(&serde_json::json!({ "x": 1 })).is_none());
+        assert!(RawGuess::from_value(
+            &serde_json::json!({ "surface": "s", "bottom": "b", "user_guess": "u", "label": "T" })
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn story_id_is_stable_and_prefixed() {
+        let a = raw("同一个汤面", "t", 4);
+        let b = raw("同一个汤面", "t", 4);
+        assert_eq!(a.id(), b.id());
+        assert!(a.id().starts_with("ds-"));
+    }
+
+    /// 防 drift：Rust 常量必须与 scripts/etl_rules.json 一致（见 04 §7）。
+    #[test]
+    fn shared_etl_rules_match_rust_constants() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts").join("etl_rules.json");
+        let text = std::fs::read_to_string(path).expect("etl_rules.json 缺失");
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["minFacts"].as_u64().unwrap() as usize, MIN_FACTS);
+        assert_eq!(v["maxFacts"].as_u64().unwrap() as usize, MAX_FACTS);
+        let kw: Vec<String> = v["blockedKeywords"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        let expected: Vec<String> = BLOCKED_KEYWORDS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(kw, expected);
     }
 }
