@@ -61,7 +61,7 @@ $env:Path = "$env:USERPROFILE\scoop\apps\mingw\current\bin;$env:USERPROFILE\.car
 }
 ```
 
-- 查找顺序：`config.json` → `TURTLE_CONFIG` 环境变量 → 当前目录 → 项目根 → `%APPDATA%\turtle-soup\data\`。
+- 查找顺序：`config.json` → `TURTLE_CONFIG` 环境变量 → 当前目录 → 项目根 → 项目根 `data/`。
 - Key 优先级：环境变量 `TURTLE_API_KEY` > `config.json` 内联。
 - `config.json` 已 gitignore，**不会进 git**。
 
@@ -103,4 +103,4 @@ cargo test   -p turtle-soup
 cargo clippy -p turtle-soup --all-targets -- -D warnings
 ```
 
-约定见 [`AGENTS.md`](AGENTS.md)；日志在 `%APPDATA%\turtle-soup\data\logs\app.log`（`TURTLE_LOG=debug` 打开 DEBUG 级）。
+约定见 [`AGENTS.md`](AGENTS.md)；日志在项目根 `data/logs/app.log`（`TURTLE_LOG=debug` 打开 DEBUG 级）。

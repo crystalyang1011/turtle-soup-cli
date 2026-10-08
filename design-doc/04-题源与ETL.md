@@ -68,7 +68,7 @@
 1. 数据集**不打包进发行版**。出厂仅内置开发期预拉、人工筛选的小批题（MVP 5 题），保证开箱即玩、离线可玩。
 2. 应用内 **`soup-cli fetch`**：用户手动触发，下载中文集 JSONL → 本地 ETL 清洗（按故事分组 + 字段映射 + key_facts 挖掘 + 血腥/色情过滤）→ 直接入库。个人工具不做审核 UI（T 标注挖掘已保质量底线），题库页提供单条删除。
 3. **断点游标**：本地记录已消费的故事 id（`consumed_ids`）与计数（`offset`），幂等，重跑不重复入库。
-4. **原始数据先落盘再清洗**：缓存到 app data 的 `raw/` 目录，ETL 可重跑。
+4. **原始数据先落盘再清洗**：缓存到项目根 `data/raw/` 目录，ETL 可重跑。
 5. **拉取端点（实测可用）**：
    - 官方：`https://huggingface.co/datasets/Duguce/TurtleBench1.5k/resolve/main/chinese/zh_data-00000-of-00001.jsonl`
    - 镜像：`https://hf-mirror.com/datasets/Duguce/TurtleBench1.5k/resolve/main/chinese/zh_data-00000-of-00001.jsonl`（`--mirror` 切换）

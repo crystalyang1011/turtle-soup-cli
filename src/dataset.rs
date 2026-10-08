@@ -47,7 +47,7 @@ pub struct FetchCursor {
 
 impl FetchCursor {
     pub fn path() -> Result<PathBuf, AppError> {
-        Ok(crate::app_data_dir()?.join("fetch_cursor.json"))
+        Ok(crate::data_dir()?.join("fetch_cursor.json"))
     }
 
     pub fn load() -> Result<Self, AppError> {
@@ -255,7 +255,7 @@ pub fn etl_to_puzzle(raw: &RawStory, difficulty: u8) -> Option<Puzzle> {
 
 /// 原始记录落盘缓存（见 04 §5.4）。
 pub fn cache_raw(batch_index: usize, rows: &[Value]) -> Result<PathBuf, AppError> {
-    let dir = crate::app_data_dir()?.join("raw");
+    let dir = crate::data_dir()?.join("raw");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("batch-{batch_index:05}.json"));
     write_atomic_json(&path, rows)?;

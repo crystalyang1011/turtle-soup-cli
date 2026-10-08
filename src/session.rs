@@ -38,7 +38,7 @@ pub fn write_atomic_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Resul
 // ---------------------------------------------------------------------------
 
 pub fn sessions_dir() -> Result<PathBuf, AppError> {
-    let d = crate::app_data_dir()?.join("sessions");
+    let d = crate::data_dir()?.join("sessions");
     std::fs::create_dir_all(&d)?;
     Ok(d)
 }
@@ -55,11 +55,11 @@ pub fn session_path(id: &str) -> Result<PathBuf, AppError> {
 }
 
 pub fn user_puzzles_path() -> Result<PathBuf, AppError> {
-    Ok(crate::app_data_dir()?.join("puzzles.json"))
+    Ok(crate::data_dir()?.join("puzzles.json"))
 }
 
 pub fn stats_path() -> Result<PathBuf, AppError> {
-    Ok(crate::app_data_dir()?.join("stats.json"))
+    Ok(crate::data_dir()?.join("stats.json"))
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +295,7 @@ pub fn delete_session(id: &str) -> Result<(), AppError> {
 // 题库存储（内置 + 用户拉取），见 03 §4、04 §5
 // ---------------------------------------------------------------------------
 
-/// 题目仓库：内置题来自 `assets/puzzles.json`，用户题来自 app data `puzzles.json`。
+/// 题目仓库：内置题来自 `assets/puzzles.json`，用户题来自项目根 `data/puzzles.json`。
 #[derive(Clone)]
 pub struct PuzzleStore {
     builtin: Vec<Puzzle>,
@@ -303,7 +303,7 @@ pub struct PuzzleStore {
 }
 
 impl PuzzleStore {
-    /// 加载题库：内置题（出厂 `assets/puzzles.json`）+ 用户题（app data）。
+    /// 加载题库：内置题（出厂 `assets/puzzles.json`）+ 用户题（项目根 `data/`）。
     ///
     /// 文件**存在但读取/解析失败**时返回明确错误，**不静默降级为空题库**
     /// （见 02 §4.3、07 §4）；文件缺失才视为空（提示用户 `fetch`）。
@@ -448,7 +448,7 @@ pub fn record_stats(rec: StatsRecord) -> Result<(), AppError> {
 // 隐藏题目（"不再显示"），见 03 §4
 // ---------------------------------------------------------------------------
 
-/// 隐藏题目清单（app data `hidden.json`）。独立于题库存储：
+/// 隐藏题目清单（项目根 `data/hidden.json`）。独立于题库存储：
 /// 内置题库只读，隐藏状态单独记，便于随时 `/unhide` 恢复。
 #[derive(Debug, Clone, Serialize, serde::Deserialize, Default)]
 pub struct HiddenFile {
@@ -459,7 +459,7 @@ pub struct HiddenFile {
 }
 
 pub fn hidden_path() -> Result<PathBuf, AppError> {
-    Ok(crate::app_data_dir()?.join("hidden.json"))
+    Ok(crate::data_dir()?.join("hidden.json"))
 }
 
 /// 读取隐藏集合。文件缺失或损坏按空处理（不影响开局，见 07 §4）。

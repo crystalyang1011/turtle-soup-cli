@@ -91,4 +91,4 @@ cargo clippy -p turtle-soup --all-targets -- -D warnings
 ## 6. Git
 
 - **只在用户明确要求时** commit / push；提交信息用中文，说明"做了什么 + 为什么"。
-- 提交前 §2 全绿；`config.json`/`sessions/`/`raw/`/`target`/`logs/` 已在 `.gitignore`，勿误提交。
+- 提交前 §2 全绿；`config.json`/`data/`/`sessions/`/`raw/`/`target`/`logs/` 已在 `.gitignore`，勿误提交。

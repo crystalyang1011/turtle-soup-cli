@@ -1,4 +1,4 @@
-//! 本地日志：落到 app data 的 `logs/app.log`，诊断判定/网络异常。
+//! 本地日志：落到项目根 `data/logs/app.log`，诊断判定/网络异常。
 //! 见 design-doc/07-安全与异常.md §7。
 //! **绝不写入 api_key / 汤底**；LLM 原始响应按需截断记录（解析失败时是关键线索）。
 // by AI.Coding
@@ -37,11 +37,11 @@ fn debug_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// 日志文件路径（可能为 None：无法定位 app data）。
+/// 日志文件路径（可能为 None：无法定位数据目录）。
 fn log_path() -> Option<&'static PathBuf> {
     LOG_PATH
         .get_or_init(|| {
-            let dir = crate::app_data_dir().ok()?.join("logs");
+            let dir = crate::data_dir().ok()?.join("logs");
             std::fs::create_dir_all(&dir).ok()?;
             Some(dir.join("app.log"))
         })

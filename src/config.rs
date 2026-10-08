@@ -22,7 +22,7 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    /// 候选配置路径（按优先级）：TURTLE_CONFIG → 当前工作目录 → 仓库根 → app data。
+    /// 候选配置路径（按优先级）：TURTLE_CONFIG → 当前工作目录 → 项目根 → 项目根 data/。
     pub fn candidate_paths() -> Vec<PathBuf> {
         let mut v = Vec::new();
         if let Ok(p) = std::env::var("TURTLE_CONFIG") {
@@ -34,15 +34,15 @@ impl AppConfig {
             v.push(cwd.join("config.json"));
         }
         v.push(crate::project_root().join("config.json"));
-        if let Ok(p) = Self::app_data_path() {
+        if let Ok(p) = Self::data_path() {
             v.push(p);
         }
         v
     }
 
-    /// app data 目录下的配置路径（兜底）。
-    pub fn app_data_path() -> Result<PathBuf, AppError> {
-        Ok(crate::app_data_dir()?.join("config.json"))
+    /// 项目根 `data/` 下的配置路径（兜底）。
+    pub fn data_path() -> Result<PathBuf, AppError> {
+        Ok(crate::data_dir()?.join("config.json"))
     }
 
     /// 实际解析到的配置路径：第一个存在的文件；都不存在则用工作目录根。

@@ -21,16 +21,42 @@ pub use models::ErrorCode;
 /// 当前 schema 版本（puzzles.json / sessions/*.json / stats.json）。
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// 应用数据目录名（`%APPDATA%/turtle-soup`）。
+/// 旧版系统 app data 目录名（仅用于一次性迁移，见 `migrate_legacy_data_dir`）。
 pub const APP_DIR_NAME: &str = "turtle-soup";
 
-/// 返回应用数据目录（不存在则创建）。
-pub fn app_data_dir() -> Result<std::path::PathBuf, AppError> {
-    let dirs = directories::ProjectDirs::from("", "", APP_DIR_NAME)
-        .ok_or_else(|| AppError::new(ErrorCode::Io, "无法定位应用数据目录"))?;
-    let dir = dirs.data_dir().to_path_buf();
+/// 运行时数据目录名（**项目根**下，见 design-doc/03 §4）。
+pub const DATA_DIR_NAME: &str = "data";
+
+/// 返回运行时数据目录：**项目根下的 `data/`**（见 design-doc/03 §4）。
+///
+/// 数据随仓库/二进制落地，便携、可被 `.gitignore` 排除，不再写入系统 app data。
+/// 首次运行时若检测到旧版系统 app data 目录，则整体迁移过来（保留题库/配置/对局）。
+pub fn data_dir() -> Result<std::path::PathBuf, AppError> {
+    let dir = project_root().join(DATA_DIR_NAME);
+    if !dir.exists() {
+        migrate_legacy_data_dir(&dir);
+    }
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// 旧版数据目录（系统 app data），仅用于一次性迁移。
+fn legacy_data_dir() -> Option<std::path::PathBuf> {
+    directories::ProjectDirs::from("", "", APP_DIR_NAME).map(|d| d.data_dir().to_path_buf())
+}
+
+/// 首次运行时把旧版系统 app data 目录整体搬到项目内，尽量不丢用户数据。
+///
+/// 这里**不使用 logging 宏**：日志路径本身依赖 `data_dir`，会递归。
+fn migrate_legacy_data_dir(new_dir: &std::path::Path) {
+    let Some(old) = legacy_data_dir() else { return };
+    if !old.is_dir() || old == new_dir {
+        return;
+    }
+    match std::fs::rename(&old, new_dir) {
+        Ok(()) => eprintln!("[信息] 已迁移数据目录：{} -> {}", old.display(), new_dir.display()),
+        Err(e) => eprintln!("[警告] 旧数据目录迁移失败（忽略）：{e}"),
+    }
 }
 
 /// 项目根目录（**运行时**解析，容忍仓库被移动 / 改名，见 02 §4.3）。

@@ -7,9 +7,11 @@ dist/
 
 # 本地配置与私有数据（见 design-doc/07-安全与异常.md §3）
 config.json
+data/
 raw/
 sessions/
 stats.json
+hidden.json
 fetch_cursor.json
 logs/
 *.bak-*
