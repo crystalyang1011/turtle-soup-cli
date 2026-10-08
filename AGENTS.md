@@ -35,9 +35,11 @@ cargo clippy -p turtle-soup --all-targets -- -D warnings
 
 ## 3. 硬性约束（违反即打回）
 
-1. **纯 CLI / 零 GUI**：不得引入 Tauri、Vue、webview 相关任何东西；不得新增前端目录。
+1. **终端优先 / 零 GUI**：不得引入 Tauri、Vue、webview、浏览器相关任何东西；不得新增前端目录。
+   TUI 渲染只准用 ratatui + crossterm（见 `docs/2-tui/`）。
 2. **分层铁律**：`engine.rs` 是**纯函数**（无网络/文件/终端）；碰 IO/网络的放 `llm.rs`/`session.rs`/`dataset.rs`；
-   终端渲染只写在 `bin/soup_cli.rs`。`game.rs` 是对局编排的**唯一实现**，勿在别处再写一份。
+   TUI 渲染/事件循环只写在 `src/ui/`，`bin/soup_cli.rs` 只做子命令分发与装配，非 TTY 降级纯文本。
+   `game.rs` 是对局编排的**唯一实现**，勿在别处再写一份；`ui/` 只消费结果 DTO，不做判定逻辑。
 3. **文档即契约**：CLI 子命令 / JSON schema / 配置字段变更 → **先改 `docs/` 对应章节，再改代码**。
 4. **prompt 版本化**：改 `src/prompts.rs` 必须同步回写 `docs/1-turtle-cli/05`，并递增 `PROMPT_VERSION`。
    判定行为不对**先改 prompt**，禁止在渲染层打补丁。
@@ -87,11 +89,12 @@ cargo clippy -p turtle-soup --all-targets -- -D warnings
 | CLI 命令 / 渲染 / 摸鱼件 | `src/bin/soup_cli.rs` ← `docs/1-turtle-cli/02 §4`、`06` |
 | 日志 | `src/logging.rs` ← `docs/1-turtle-cli/07 §7` |
 | 内置题 | `assets/puzzles.json`（4–6 条 key_facts，1–2 条 core） |
-| TUI 界面（新阶段） | `src/ui/` ← `docs/2-tui/` |
+| TUI 界面 | `src/ui/` ← `docs/2-tui/` |
 
 ---
 
 ## 6. Git
 
 - **只在用户明确要求时** commit / push；不得改完代码后主动顺手 commit。提交信息用中文，说明"做了什么 + 为什么"。
-- 提交前 §2 全绿；`config.json`/`data/`/`sessions/`/`raw/`/`target`/`logs/` 已在 `.gitignore`，勿误提交。
+- 提交前 §2 全绿；`config.json`/`data/`/`sessions/`/`raw/`/`target`/`logs/`/`.opencode/node_modules/`
+  已在 `.gitignore`，勿误提交；`.opencode/skills/` 等手工配置**应当**入库。

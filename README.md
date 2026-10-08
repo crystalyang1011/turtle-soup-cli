@@ -1,7 +1,7 @@
 # TUI 游戏平台（终端版）
 
 > 终端里的 AI 文字游戏平台：现在有海龟汤（你只能问"是/否"，AI 当主持人），
-> 正在长出 TUI 壳，后续加入猜词、你画我猜等游戏。
+> 阶段二正在做 TUI 平台壳（方案已定稿，见 [`docs/2-tui/`](docs/2-tui/)），后续加入猜词、你画我猜等游戏。
 > 设计文档见 [`docs/`](docs/)（**唯一事实源**，按阶段分目录）。命令行 `cargo run` 即随机来一局。
 >
 > 定位（2026-10 拍板）：自娱 + 开源的 **TUI 游戏平台**——
@@ -13,9 +13,11 @@
 
 ```
 turtle-soup/
-├── docs/                   # 设计文档（唯一事实源，按阶段分目录）
+├── docs/                       # 设计文档（唯一事实源，按阶段分目录）
+│   ├── 1-turtle-cli/           # 阶段一：海龟汤 CLI（已完结，封存）
+│   └── 2-tui/                  # 阶段二：TUI 平台壳（进行中）
 ├── src/
-│   ├── bin/soup_cli.rs  # CLI：子命令 + REPL + 渲染 + 摸鱼件
+│   ├── bin/soup_cli.rs  # 子命令分发 + REPL 装配 + 摸鱼件
 │   ├── models.rs        # Puzzle / Session / 错误码
 │   ├── config.rs        # 配置加载 + 校验（多路径查找）
 │   ├── secrets.rs       # API Key（env > config 内联）
@@ -27,8 +29,10 @@ turtle-soup/
 │   ├── game.rs          # 对局编排
 │   ├── ui/              # TUI（阶段二）：面板 / 事件循环 / 降级输出
 │   └── logging.rs       # 本地日志（脱敏）
-├── scripts/etl_turtlebench.py   # 开发期 ETL（清洗规则事实源）
+├── .opencode/skills/           # 工程级 agent skills（git-commit 提交工作流等）
+├── scripts/etl_turtlebench.py  # 开发期 ETL（清洗规则事实源）
 ├── assets/puzzles.json  # 出厂内置 5 题
+├── data/                # 运行时数据（用户题库/对局/日志，已 gitignore）
 ├── config.json          # 本地配置与密钥（.env 理念，已 gitignore）
 ├── config.example.json  # 配置样例
 └── Cargo.toml
@@ -91,11 +95,10 @@ cargo run -- config                    # 打印配置与日志路径
 | 直接输入 | 提问（是 / 否 / 无关 / 一半） |
 | `/guess <推理>` | 猜底（次数不限，失败扣分后继续） |
 | `/hint` | 方向提示（不泄底、不分级、次数不限） |
+| `/answer` | 二次确认后展示汤底（确认即弃局结算，本局结束） |
 | `/switch [id]` / `/hide` | 切换题目 / 标记当前题不再显示 |
 | `/status` | 查看进度、已用提示、猜底失败次数 |
 | `/quit` | 挂起并退出（`Ctrl+C` 同样会落盘退出） |
-
-编译好的单文件在 `target\debug\soup-cli.exe`。
 
 ---
 
