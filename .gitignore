@@ -22,3 +22,6 @@ logs/
 .idea/
 .vscode/
 *.log
+
+# opencode 工程配置：只提交 skills 等手工配置，运行时产物（node_modules 等）不入库
+.opencode/node_modules/
