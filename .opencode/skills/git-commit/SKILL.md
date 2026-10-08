@@ -24,7 +24,7 @@ metadata:
    - 不绿不提交；修复后重新走本流程。
    - 纯文档改动可豁免门禁，但需在 commit message 中注明"纯文档"。
 3. **暂存**：只 add 本次意图内的文件，逐个确认，不用 `git add -A` 盲加。
-4. **message**：中文，第一行 = `类型: 做了什么`（类型沿用仓库历史：`feat / fix / docs / refactor`），
+4. **message**：中文，第一行 = `类型: 做了什么`（类型沿用仓库历史：`feat / fix / docs / refact`），
    空一行后列要点，说明"做了什么 + 为什么"。参考 `git log` 既有风格。
 5. **提交**：`git commit`（不加 `--no-verify`）；失败或钩子拒绝则修复后**另起新 commit**，不 amend。
 6. **收尾**：默认**不 push**、不 amend、不改 git config；push/建 MR 需用户明确说。
