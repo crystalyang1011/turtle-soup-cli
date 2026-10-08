@@ -65,7 +65,7 @@ fn print_help() {
          \x20 soup-cli ask <puzzle_id> <问题...>          单次判定（脚本/冒烟）\n\
          \x20 soup-cli fetch [--difficulty N] [--mirror]  拉取并清洗 TurtleBench 中文题源\n\
          \x20 soup-cli config                            打印配置与日志路径\n\
-         \n对局内: 直接输入即提问 | /guess <推理> | /hint | /switch [id] | /hide | /list | /status | /quit\n\
+         \n对局内: 直接输入即提问 | /guess <推理> | /hint | /answer | /switch [id] | /hide | /list | /status | /quit\n\
          \nAPI Key: 环境变量 TURTLE_API_KEY 或 config.json 的 api_key。"
     );
 }
@@ -363,6 +363,27 @@ async fn cmd_play(args: &[String]) -> Result<(), turtle_soup::AppError> {
                 handle(&shared, &mut session, r.map(|x| x.text))?;
                 continue;
             }
+            "/answer" => {
+                // 玩家主动查看汤底：**必须二次确认**；确认即弃局结算，结算后才展示汤底
+                // （见 02 §4.2、07 §2 反泄底例外）。
+                print!("确认放弃本局、查看「{}」的汤底？[y/N] ", puzzle.title);
+                io::stdout().flush().ok();
+                let mut ans = String::new();
+                let ans = if io::stdin().read_line(&mut ans)? == 0 {
+                    String::new()
+                } else {
+                    ans.trim().to_ascii_lowercase()
+                };
+                if ans != "y" && ans != "yes" {
+                    println!("已取消。");
+                    continue;
+                }
+                session.abandon();
+                session::save_session(&session)?;
+                *shared.lock().unwrap() = Some(session.clone());
+                finish(&session, &puzzle);
+                break;
+            }
             _ => {}
         }
 
@@ -392,7 +413,7 @@ fn render_intro(puzzle: &Puzzle, session: &Session) {
     println!("\n=== 海龟汤 · 摸鱼版 ===");
     println!("题目: {}  (D{})", puzzle.title, puzzle.difficulty);
     println!("\n【汤面】{}\n", puzzle.surface);
-    println!("直接输入即提问 | /guess <推理> | /hint | /switch [id] | /hide | /list | /status | /quit");
+    println!("直接输入即提问 | /guess <推理> | /hint | /answer | /switch [id] | /hide | /list | /status | /quit");
     println!(
         "(提示、猜底均不限次)  已问 {} 问，进度 {}/{}\n",
         session.question_count,
