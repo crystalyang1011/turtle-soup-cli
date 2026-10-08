@@ -14,6 +14,7 @@ pub mod models;
 pub mod prompts;
 pub mod secrets;
 pub mod session;
+pub mod ui;
 
 pub use models::AppError;
 pub use models::ErrorCode;

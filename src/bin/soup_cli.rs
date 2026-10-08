@@ -9,7 +9,7 @@ use std::time::Duration;
 use turtle_soup::config::AppConfig;
 use turtle_soup::dataset::{DatasetClient, FetchCursor, DEFAULT_ENDPOINT, MIRROR_ENDPOINT};
 use turtle_soup::game::{GameService, MAX_QUESTIONS};
-use turtle_soup::models::{ErrorCode, Judgment, Puzzle, Session, SessionStatus};
+use turtle_soup::models::{ErrorCode, Judgment, Puzzle, Role, Session, SessionStatus};
 use turtle_soup::session::{self, PuzzleStore};
 use turtle_soup::{engine, logging, secrets};
 
@@ -173,11 +173,13 @@ async fn cmd_play(args: &[String]) -> Result<(), turtle_soup::AppError> {
     let mut puzzle_id: Option<String> = None;
     let mut resume_id: Option<String> = None;
     let mut difficulty: Option<u8> = None;
+    let mut no_tui = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--difficulty" | "-d" => difficulty = it.next().and_then(|s| s.parse::<u8>().ok()),
             "--resume" | "-r" => resume_id = it.next().cloned(),
+            "--no-tui" => no_tui = true,
             other if !other.starts_with('-') => puzzle_id = Some(other.to_string()),
             _ => {}
         }
@@ -202,6 +204,13 @@ async fn cmd_play(args: &[String]) -> Result<(), turtle_soup::AppError> {
         session.resume(false);
     }
     session::save_session(&session)?;
+
+    // 渲染器选择（01-界面设计.md §6 降级矩阵）：
+    // 全屏 TUI 仅在 TTY + 尺寸 ≥80×24 且未指定 --no-tui 时启用，否则纯文本 REPL。
+    let use_tui = !no_tui && io::stdout().is_terminal() && turtle_soup::ui::tui::size_ok();
+    if use_tui {
+        return run_tui_game(svc, puzzle, session).await;
+    }
 
     // 共享会话：Ctrl+C 时落盘并还原标题（见 06 §2、07 §8）
     let shared: SharedSession = Arc::new(Mutex::new(Some(session.clone())));
@@ -402,6 +411,307 @@ async fn cmd_play(args: &[String]) -> Result<(), turtle_soup::AppError> {
         }))?;
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// TUI 对局循环（阶段二，见 docs/2-tui/01-界面设计.md §1.3）
+// ---------------------------------------------------------------------------
+
+/// 全屏 TUI 对局：crossterm 事件与 LLM future 经 tokio::select! 并发，
+/// 100ms 心跳重绘驱动 spinner。`ui/` 只消费 GameView，判定全部走 GameService。
+async fn run_tui_game(
+    svc: GameService,
+    mut puzzle: Puzzle,
+    mut session: Session,
+) -> Result<(), turtle_soup::AppError> {
+    use turtle_soup::game::MAX_QUESTIONS;
+    use turtle_soup::ui::{tui::TuiSession, FeedKind, GameView};
+
+    let mut tui = TuiSession::enter()?;
+    let mut events = crossterm::event::EventStream::new();
+    let mut view = GameView {
+        game_title: "海龟汤".into(),
+        max_questions: MAX_QUESTIONS,
+        ..Default::default()
+    };
+    let scroll_offset: u16 = 0;
+    let mut quit = false;
+
+    // 视图同步：从对局状态映射到 GameView（汤面 + 恢复的历史消息）。
+    fn sync_view(view: &mut GameView, puzzle: &Puzzle, session: &Session) {
+        view.puzzle_title = puzzle.title.clone();
+        view.difficulty = puzzle.difficulty;
+        view.surface = puzzle.surface.clone();
+        view.question_count = session.question_count;
+        view.hit = session.hit_facts.len();
+        view.total = puzzle.fact_count();
+        view.hints_used = session.hint_levels.len() as u32;
+    }
+    sync_view(&mut view, &puzzle, &session);
+    for m in &session.messages {
+        let kind = match m.role {
+            Role::Player => FeedKind::Question,
+            Role::Host => match m.judgment {
+                Some(Judgment::Yes) => FeedKind::Yes,
+                Some(Judgment::No) => FeedKind::No,
+                Some(Judgment::Partial) => FeedKind::Partial,
+                Some(Judgment::Irrelevant) => FeedKind::Irrelevant,
+                None => {
+                    if m.text.starts_with("【提示】") {
+                        FeedKind::Hint
+                    } else {
+                        FeedKind::System
+                    }
+                }
+            },
+        };
+        let text = m.text.strip_prefix("【提示】").unwrap_or(&m.text).to_string();
+        view.push(kind, text);
+    }
+
+    while !quit {
+        sync_view(&mut view, &puzzle, &session);
+        turtle_soup::ui::tui::draw(tui.terminal(), &view, scroll_offset)?;
+
+        // 空闲时**阻塞等按键、不空转重绘**：每帧 MoveTo/ShowCursor 会重置终端光标
+        // 闪烁相位，表现为光标异常抖动（见 01-界面设计.md §1.3）。等 LLM 的动画由
+        // run_animated 内部按 100ms 节拍驱动，不在此处轮询。
+        let mut action = None;
+        while action.is_none() {
+            action = turtle_soup::ui::tui::poll_key(&mut events, None).await?;
+        }
+        let action = action.unwrap();
+
+        match action {
+            turtle_soup::ui::tui::KeyAction::Quit => {
+                session.pause();
+                session::save_session(&session)?;
+                view.push(FeedKind::System, format!("已挂起（session {}），下次 --resume 恢复", session.id));
+                quit = true;
+            }
+            turtle_soup::ui::tui::KeyAction::ClearInput => view.clear_input(),
+            turtle_soup::ui::tui::KeyAction::Backspace => view.backspace(),
+            turtle_soup::ui::tui::KeyAction::Delete => view.delete(),
+            turtle_soup::ui::tui::KeyAction::MoveLeft => view.move_left(),
+            turtle_soup::ui::tui::KeyAction::MoveRight => view.move_right(),
+            turtle_soup::ui::tui::KeyAction::Home => view.move_home(),
+            turtle_soup::ui::tui::KeyAction::End => view.move_end(),
+            turtle_soup::ui::tui::KeyAction::Input(c) => view.insert_char(c),
+            turtle_soup::ui::tui::KeyAction::Ignore => {}
+            turtle_soup::ui::tui::KeyAction::Submit => {
+                let input = view.input.trim().to_string();
+                if input.is_empty() {
+                    continue;
+                }
+                view.clear_input();
+
+                // slash 命令（与纯文本 REPL 同语义；输出型命令结果进消息流）。
+                if input == "/quit" {
+                    session.pause();
+                    session::save_session(&session)?;
+                    view.push(FeedKind::System, format!("已挂起（session {}），下次 --resume 恢复", session.id));
+                    quit = true;
+                    continue;
+                }
+                if input == "/status" {
+                    view.push(
+                        FeedKind::System,
+                        format!(
+                            "状态 {:?} | 已问 {} 问 | 命中 {:?} | 提示 {} 次 | 猜底失败 {} 次",
+                            session.status,
+                            session.question_count,
+                            session.hit_facts,
+                            session.hint_levels.len(),
+                            session.guess_attempts_failed
+                        ),
+                    );
+                    continue;
+                }
+                if input == "/list" {
+                    let hidden = session::load_hidden();
+                    for p in svc.store.all() {
+                        let mark = if hidden.contains(&p.id) { " （已隐藏）" } else { "" };
+                        view.push(
+                            FeedKind::System,
+                            format!("{} D{} {} 条事实 {}{}", p.id, p.difficulty, p.key_facts.len(), p.title, mark),
+                        );
+                    }
+                    continue;
+                }
+                if input == "/unhide" || input.starts_with("/unhide ") {
+                    let arg = input.strip_prefix("/unhide").unwrap_or("").trim();
+                    if arg.is_empty() {
+                        view.push(FeedKind::System, "用法：/unhide <puzzle_id>（用 /list 查看）".to_string());
+                    } else {
+                        match session::unhide_puzzle(arg)? {
+                            true => view.push(FeedKind::System, format!("已取消隐藏：{arg}")),
+                            false => view.push(FeedKind::System, format!("该题未被隐藏：{arg}")),
+                        }
+                    }
+                    continue;
+                }
+                if input == "/help" {
+                    view.push(FeedKind::System, "直接输入提问 | /guess <推理> | /hint | /answer | /switch [id] | /hide | /list | /status | /quit".to_string());
+                    continue;
+                }
+
+                // 以下命令可能调 LLM：进入 busy 态；等待期间由 run_animated 持续重绘 spinner。
+                view.busy = true;
+                let mut result: Result<(), turtle_soup::AppError> = Ok(());
+
+                if let Some(rest) = input.strip_prefix("/guess ") {
+                    let rest = rest.to_string();
+                    view.push(FeedKind::Question, format!("[猜底] {rest}"));
+                    let r = turtle_soup::ui::tui::run_animated(
+                        tui.terminal(),
+                        &mut view,
+                        svc.judge_guess(&puzzle, &mut session, &rest),
+                    )
+                    .await;
+                    match r {
+                        Ok(x) => {
+                            view.push(
+                                FeedKind::System,
+                                format!(
+                                    "判定: {:?}  命中 {}/{}  点评: {}",
+                                    x.verdict, x.hit_count, x.hit_count + x.missed_count, x.comment
+                                ),
+                            );
+                            if session.status.is_finished() {
+                                let truth = x.truth.clone().unwrap_or_else(|| puzzle.truth.clone());
+                                view.push(FeedKind::Truth, truth);
+                                if let Some(s) = x.score {
+                                    view.push(FeedKind::System, format!("得分 {}  星级 {}", s.score, "★".repeat(s.stars as usize)));
+                                }
+                            }
+                        }
+                        Err(e) => result = Err(e),
+                    }
+                } else if input == "/hint" {
+                    let r = turtle_soup::ui::tui::run_animated(
+                        tui.terminal(),
+                        &mut view,
+                        svc.use_hint(&puzzle, &mut session),
+                    )
+                    .await;
+                    match r {
+                        Ok(x) => view.push(FeedKind::Hint, x.text),
+                        Err(e) => result = Err(e),
+                    }
+                } else if input.starts_with("/answer") {
+                    // 二次确认复用输入行：`/answer` 提示，`/answer y` 确认（TUI 无 stdin read_line）。
+                    view.push(FeedKind::System, format!("确认放弃本局并查看「{}」汤底？再次输入 /answer y 确认", puzzle.title));
+                    if input.trim() == "/answer y" {
+                        session.abandon();
+                        session::save_session(&session)?;
+                        view.push(FeedKind::Truth, puzzle.truth.clone());
+                        quit = true;
+                    }
+                } else if input.starts_with("/switch") || input.starts_with("/pick") {
+                    let target = input
+                        .strip_prefix("/switch")
+                        .or_else(|| input.strip_prefix("/pick"))
+                        .map(str::trim)
+                        .unwrap_or("");
+                    let new_puzzle = if target.is_empty() {
+                        match pick_random_puzzle(&svc, None) {
+                            Ok(p) => Some(p),
+                            Err(e) => {
+                                view.push(FeedKind::System, e.message);
+                                None
+                            }
+                        }
+                    } else {
+                        match svc.store.get(target) {
+                            Some(p) => Some(p.clone()),
+                            None => {
+                                view.push(FeedKind::System, format!("题库中不存在题目 {target}（用 /list 查看可选 id）"));
+                                None
+                            }
+                        }
+                    };
+                    if let Some(new_puzzle) = new_puzzle {
+                        session.pause();
+                        session::save_session(&session)?;
+                        let new_session =
+                            Session::new(format!("cli-{}", turtle_soup::models::now_ts()), &new_puzzle);
+                        session::save_session(&new_session)?;
+                        session = new_session;
+                        puzzle = new_puzzle;
+                        view.feed.clear();
+                        sync_view(&mut view, &puzzle, &session);
+                        view.push(FeedKind::System, format!("已切换到「{}」", puzzle.title));
+                    }
+                } else if input.starts_with("/hide") {
+                    view.push(FeedKind::System, format!("TUI 下用法：/hide y 确认隐藏「{}」并换题", puzzle.title));
+                    if input.trim() == "/hide y" {
+                        let target = session.puzzle_id.clone();
+                        session::hide_puzzle(&target)?;
+                        view.push(FeedKind::System, format!("已隐藏 {target}，随机选题不再显示（/unhide {target} 恢复）"));
+                        session.pause();
+                        session::save_session(&session)?;
+                        match pick_random_puzzle(&svc, None) {
+                            Ok(new_puzzle) => {
+                                let new_session = Session::new(
+                                    format!("cli-{}", turtle_soup::models::now_ts()),
+                                    &new_puzzle,
+                                );
+                                session::save_session(&new_session)?;
+                                session = new_session;
+                                puzzle = new_puzzle;
+                                view.feed.clear();
+                                sync_view(&mut view, &puzzle, &session);
+                                view.push(FeedKind::System, format!("已换题：「{}」", puzzle.title));
+                            }
+                            Err(e) => view.push(FeedKind::System, e.message),
+                        }
+                    }
+                } else if session.question_count >= MAX_QUESTIONS {
+                    view.push(FeedKind::System, "已达提问上限，请 /guess 猜底或 /quit。".to_string());
+                } else {
+                    // 普通提问。
+                    view.push(FeedKind::Question, input.clone());
+                    let r = turtle_soup::ui::tui::run_animated(
+                        tui.terminal(),
+                        &mut view,
+                        svc.ask_host(&puzzle, &mut session, &input),
+                    )
+                    .await;
+                    match r {
+                        Ok(x) => {
+                            let kind = match x.judgment {
+                                Judgment::Yes => FeedKind::Yes,
+                                Judgment::No => FeedKind::No,
+                                Judgment::Partial => FeedKind::Partial,
+                                Judgment::Irrelevant => FeedKind::Irrelevant,
+                            };
+                            view.push(kind, x.reply.clone());
+                            view.hit = x.progress.hit;
+                            view.total = x.progress.total;
+                        }
+                        Err(e) => result = Err(e),
+                    }
+                }
+                view.busy = false;
+
+                // 统一错误渲染（对局内预期状态按普通提示，其余报错；语义同 handle()）。
+                if let Err(e) = result {
+                    match e.code {
+                        ErrorCode::InvalidState => view.push(FeedKind::System, e.message),
+                        ErrorCode::ParseFailed => {
+                            view.push(FeedKind::System, "判定失败，请重试。（详见日志）".to_string())
+                        }
+                        _ => view.push(FeedKind::System, format!("[异常] {e}")),
+                    }
+                }
+                // 每次交互落盘（语义同纯文本 handle()）。
+                session::save_session(&session)?;
+            }
+        }
+    }
+
+    tui.restore();
     Ok(())
 }
 

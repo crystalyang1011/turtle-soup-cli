@@ -65,7 +65,7 @@ cargo clippy -p turtle-soup --all-targets -- -D warnings
 - **纯函数优先**：规则（评分、胜负、解析、命中计算）写进 `engine.rs` 并配 `#[cfg(test)]` 单测。
 - **数据契约**：磁盘存储 `snake_case`（见 `docs/1-turtle-cli/03`）。
 - **依赖**：serde / serde_json / thiserror / reqwest(rustls) / tokio / directories / tempfile
-  / ratatui / crossterm；**不加** keyring / clap / tauri 等。新增依赖前先说明理由。
+  / ratatui / crossterm / futures-util（crossterm EventStream 配套）；**不加** keyring / clap / tauri 等。新增依赖前先说明理由。
 
 ### 4.2 CLI（`src/bin/soup_cli.rs`）
 

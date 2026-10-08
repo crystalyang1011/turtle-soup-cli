@@ -1,9 +1,9 @@
-# 海龟汤 · CLI 摸鱼版（纯 Rust 单二进制）
-# v3.0 起只做 CLI：无 Tauri / 无前端。
+# 海龟汤摸鱼游戏 · TUI 游戏平台（终端版，纯 Rust 单二进制）
+# 无 Tauri / 无前端；阶段二起 TUI 渲染用 ratatui + crossterm（见 docs/2-tui/）。
 # 架构见 docs/1-turtle-cli/02-技术架构.md
 [package]
 name = "turtle-soup"
-description = "终端海龟汤摸鱼游戏（CLI）"
+description = "终端海龟汤摸鱼游戏（TUI）"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
@@ -25,6 +25,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "io-std", "time", "signal"] }
 directories = "5"
 tempfile = "3"
+# TUI（阶段二，见 docs/2-tui/01-界面设计.md）
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+# crossterm EventStream 的 StreamExt（已在依赖树内，显式声明使用）
+futures-util = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
