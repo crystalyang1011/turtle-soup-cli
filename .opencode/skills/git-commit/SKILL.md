@@ -24,10 +24,19 @@ metadata:
    - 不绿不提交；修复后重新走本流程。
    - 纯文档改动可豁免门禁，但需在 commit message 中注明"纯文档"。
 3. **暂存**：只 add 本次意图内的文件，逐个确认，不用 `git add -A` 盲加。
-4. **message**：中文，第一行 = `类型: 做了什么`（类型沿用仓库历史：`feat / fix / docs / refact`），
+4. **message**：中文，第一行 = `类型: 做了什么`（类型沿用仓库历史：`feat / fix / docs / refact / chore`），
    空一行后列要点，说明"做了什么 + 为什么"。参考 `git log` 既有风格。
 5. **提交**：`git commit`（不加 `--no-verify`）；失败或钩子拒绝则修复后**另起新 commit**，不 amend。
+   **硬性前提：用户明确说了"提交/commit"才允许走到这一步**；改完代码/文档后不得主动顺手 commit。
 6. **收尾**：默认**不 push**、不 amend、不改 git config；push/建 MR 需用户明确说。
+
+## 类型清单
+
+- `feat`：新功能
+- `fix`：修 bug
+- `docs`：纯文档（可豁免门禁，message 注明）
+- `refact`：重构（行为不变）
+- `chore`：构建/依赖/仓库配置/工具链等杂务，不碰代码逻辑（.gitignore、Cargo.toml、skills 等）
 
 ## 触发词
 
