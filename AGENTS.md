@@ -1,10 +1,12 @@
-# AGENTS.md · 海龟汤（CLI 摸鱼版）
+# AGENTS.md · TUI 游戏平台（终端版）
 
 面向在本仓库工作的 AI 编码代理，只讲**怎么干活 / 什么不能碰**。
 
 - 产品定位、项目结构、配置与使用 → 见 [`README.md`](README.md)（避免重复，以它为准）。
 - 玩法数值、数据结构、接口契约、安全设计 → 见 [`docs/`](docs/)（**唯一事实源**，按阶段分目录）。
-- 本项目**只有 CLI**（纯 Rust 单二进制），GUI 版（Tauri/Vue）**已移除**，不要再引入前端。
+- 本项目是 **TUI 游戏平台**：终端优先，无 GUI（Tauri/Vue 版**已移除**，不要再引入前端）；
+  海龟汤 CLI 是阶段一已封存的第一个游戏；当前阶段二做 TUI 壳（[`docs/2-tui/`](docs/2-tui/)），
+  终局支持 game pack（写配置加游戏）。
 
 ---
 
@@ -60,8 +62,8 @@ cargo clippy -p turtle-soup --all-targets -- -D warnings
   用 `thiserror`/`?` 传播；禁止在业务路径 `unwrap()/expect()`。
 - **纯函数优先**：规则（评分、胜负、解析、命中计算）写进 `engine.rs` 并配 `#[cfg(test)]` 单测。
 - **数据契约**：磁盘存储 `snake_case`（见 `docs/1-turtle-cli/03`）。
-- **依赖**：仅 serde / serde_json / thiserror / reqwest(rustls) / tokio / directories / tempfile；
-  **不加** keyring / clap / tauri 等。新增依赖前先说明理由。
+- **依赖**：serde / serde_json / thiserror / reqwest(rustls) / tokio / directories / tempfile
+  / ratatui / crossterm；**不加** keyring / clap / tauri 等。新增依赖前先说明理由。
 
 ### 4.2 CLI（`src/bin/soup_cli.rs`）
 
