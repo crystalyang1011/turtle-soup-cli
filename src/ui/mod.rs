@@ -60,18 +60,18 @@ impl FeedKind {
 pub struct GameView {
     /// 标题栏左侧：游戏名。
     pub game_title: String,
-    /// 标题栏右侧：题目标题（如「水与枪」）。
+    /// 题目标题（如「水与枪」）。
     pub puzzle_title: String,
+    /// 题目 id（如 `classic-001`，状态栏展示用）。
+    pub puzzle_id: String,
     /// 难度 D1–D5（0 表示未开局）。
     pub difficulty: u8,
     /// 汤面（整局常驻）。
     pub surface: String,
     /// 消息流条目（时间序）。
     pub feed: Vec<FeedItem>,
-    /// 已提问数。
+    /// 已提问数（仅记录，不设上限）。
     pub question_count: u32,
-    /// 提问上限。
-    pub max_questions: u32,
     /// 进度命中数。
     pub hit: usize,
     /// 进度总数。
@@ -166,12 +166,11 @@ impl GameView {
     /// 消息流容量上限：超出时从头部丢弃（见 01-界面设计.md §1.2；完整历史在会话文件里）。
     pub const FEED_CAP: usize = 200;
 
-    /// 状态栏文本（含帮助提示）。
+    /// 状态栏文本（动态进度；题目身份在标题栏，见 01-界面设计.md §1.2）。
     pub fn status_line(&self) -> String {
         format!(
-            "{} D{} · 问 {}/{} · 进度 {}/{} · 提示 {} · /help 帮助",
-            self.puzzle_title, self.difficulty, self.question_count, self.max_questions,
-            self.hit, self.total, self.hints_used
+            "问 {} · 进度 {}/{} · 提示 {}",
+            self.question_count, self.hit, self.total, self.hints_used
         )
     }
 
@@ -181,6 +180,10 @@ impl GameView {
         FRAMES[self.spinner_frame % FRAMES.len()]
     }
 }
+
+/// 对局内命令帮助行（状态区第二行，见 01-界面设计.md §1.2）。
+pub const COMMANDS_HINT: &str =
+    "/guess <推理>  /hint  /answer  /switch [id]  /hide  /list  /status  /quit";
 
 /// 主题：ANSI 16 色安全集（见 01-界面设计.md §2）。
 pub mod theme {
@@ -207,20 +210,24 @@ mod tests {
     fn status_line_contains_key_stats() {
         let v = GameView {
             puzzle_title: "水与枪".into(),
+            puzzle_id: "classic-001".into(),
             difficulty: 2,
             question_count: 3,
-            max_questions: 60,
             hit: 1,
             total: 5,
             hints_used: 2,
             ..Default::default()
         };
         let s = v.status_line();
-        assert!(s.contains("水与枪"));
-        assert!(s.contains("D2"));
-        assert!(s.contains("问 3/60"));
+        // 提问数只记录、不显示上限。
+        assert!(s.contains("问 3"));
+        assert!(!s.contains("问 3/"));
         assert!(s.contains("进度 1/5"));
         assert!(s.contains("提示 2"));
+        assert!(!s.contains("/help"));
+        // 题目身份已移到标题栏，状态栏不再重复。
+        assert!(!s.contains("水与枪"));
+        assert!(!s.contains("classic-001"));
     }
 
     #[test]

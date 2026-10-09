@@ -11,9 +11,6 @@ use crate::models::{
 use crate::prompts;
 use crate::session::PuzzleStore;
 
-/// 单局最大提问数（见 02 §3 token 预算）。
-pub const MAX_QUESTIONS: u32 = 60;
-
 /// 结构化输出解析失败时的纠正指令：`temperature=0` 重调一次（见 05 §5）。
 const PARSE_REPAIR_HINT: &str =
     "你的上一条回复不是合法 JSON。请仅输出一个 JSON 对象，不要包含任何解释、markdown 代码块或括号外的文字。";
@@ -108,9 +105,6 @@ impl GameService {
     ) -> Result<AskHostResult, AppError> {
         if session.status.is_finished() {
             return Err(AppError::new(ErrorCode::InvalidState, "本局已结束"));
-        }
-        if session.question_count >= MAX_QUESTIONS {
-            return Err(AppError::new(ErrorCode::InvalidState, "提问数已达上限"));
         }
         let text = sanitize_input(text);
         let rollback_at = session.messages.len();

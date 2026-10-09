@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use turtle_soup::config::AppConfig;
 use turtle_soup::dataset::{DatasetClient, FetchCursor, DEFAULT_ENDPOINT, MIRROR_ENDPOINT};
-use turtle_soup::game::{GameService, MAX_QUESTIONS};
+use turtle_soup::game::GameService;
 use turtle_soup::models::{ErrorCode, Judgment, Puzzle, Role, Session, SessionStatus};
 use turtle_soup::session::{self, PuzzleStore};
 use turtle_soup::{engine, logging, secrets};
@@ -396,10 +396,6 @@ async fn cmd_play(args: &[String]) -> Result<(), turtle_soup::AppError> {
             _ => {}
         }
 
-        if session.question_count >= MAX_QUESTIONS {
-            println!("已达提问上限，请猜底或 /quit。");
-            continue;
-        }
         let r = with_spinner("主持人思考中…", svc.ask_host(&puzzle, &mut session, input)).await;
         handle(&shared, &mut session, r.map(|x| {
             format!(
@@ -425,22 +421,28 @@ async fn run_tui_game(
     mut puzzle: Puzzle,
     mut session: Session,
 ) -> Result<(), turtle_soup::AppError> {
-    use turtle_soup::game::MAX_QUESTIONS;
     use turtle_soup::ui::{tui::TuiSession, FeedKind, GameView};
 
     let mut tui = TuiSession::enter()?;
     let mut events = crossterm::event::EventStream::new();
     let mut view = GameView {
         game_title: "海龟汤".into(),
-        max_questions: MAX_QUESTIONS,
         ..Default::default()
     };
     let scroll_offset: u16 = 0;
     let mut quit = false;
+    // 待确认操作（/answer、/hide 的二次确认）：置位后，下一行输入只解释为 是/否。
+    #[derive(Clone, Copy)]
+    enum Confirm {
+        Answer,
+        Hide,
+    }
+    let mut pending: Option<Confirm> = None;
 
     // 视图同步：从对局状态映射到 GameView（汤面 + 恢复的历史消息）。
     fn sync_view(view: &mut GameView, puzzle: &Puzzle, session: &Session) {
         view.puzzle_title = puzzle.title.clone();
+        view.puzzle_id = puzzle.id.clone();
         view.difficulty = puzzle.difficulty;
         view.surface = puzzle.surface.clone();
         view.question_count = session.question_count;
@@ -505,6 +507,49 @@ async fn run_tui_game(
                     continue;
                 }
                 view.clear_input();
+
+                // 待确认操作：本行输入解释为 是/否（支持裸 `y`，见 01-界面设计.md §1.3）。
+                if let Some(kind) = pending.take() {
+                    let yes = matches!(
+                        input.to_ascii_lowercase().as_str(),
+                        "y" | "yes" | "是" | "对" | "确认"
+                    );
+                    if !yes {
+                        view.push(FeedKind::System, "已取消。".to_string());
+                    } else {
+                        match kind {
+                            Confirm::Answer => {
+                                session.abandon();
+                                session::save_session(&session)?;
+                                view.push(FeedKind::Truth, puzzle.truth.clone());
+                                view.push(FeedKind::System, "本局已结束（弃局）。输入 /quit 退出，或 /switch 换题。".to_string());
+                            }
+                            Confirm::Hide => {
+                                let target = session.puzzle_id.clone();
+                                session::hide_puzzle(&target)?;
+                                view.push(FeedKind::System, format!("已隐藏 {target}（/unhide {target} 恢复）"));
+                                session.pause();
+                                session::save_session(&session)?;
+                                match pick_random_puzzle(&svc, None) {
+                                    Ok(new_puzzle) => {
+                                        let new_session = Session::new(
+                                            format!("cli-{}", turtle_soup::models::now_ts()),
+                                            &new_puzzle,
+                                        );
+                                        session::save_session(&new_session)?;
+                                        session = new_session;
+                                        puzzle = new_puzzle;
+                                        view.feed.clear();
+                                        sync_view(&mut view, &puzzle, &session);
+                                        view.push(FeedKind::System, format!("已换题：「{}」", puzzle.title));
+                                    }
+                                    Err(e) => view.push(FeedKind::System, e.message),
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
 
                 // slash 命令（与纯文本 REPL 同语义；输出型命令结果进消息流）。
                 if input == "/quit" {
@@ -600,13 +645,15 @@ async fn run_tui_game(
                         Err(e) => result = Err(e),
                     }
                 } else if input.starts_with("/answer") {
-                    // 二次确认复用输入行：`/answer` 提示，`/answer y` 确认（TUI 无 stdin read_line）。
-                    view.push(FeedKind::System, format!("确认放弃本局并查看「{}」汤底？再次输入 /answer y 确认", puzzle.title));
+                    // 二次确认：`/answer` 进入待确认态，下一行输入 `y` 即确认；`/answer y` 亦可直接确认。
                     if input.trim() == "/answer y" {
                         session.abandon();
                         session::save_session(&session)?;
                         view.push(FeedKind::Truth, puzzle.truth.clone());
-                        quit = true;
+                        view.push(FeedKind::System, "本局已结束（弃局）。输入 /quit 退出，或 /switch 换题。".to_string());
+                    } else {
+                        pending = Some(Confirm::Answer);
+                        view.push(FeedKind::System, format!("确认放弃本局并查看「{}」汤底？输入 y 确认，其它取消。", puzzle.title));
                     }
                 } else if input.starts_with("/switch") || input.starts_with("/pick") {
                     let target = input
@@ -644,7 +691,7 @@ async fn run_tui_game(
                         view.push(FeedKind::System, format!("已切换到「{}」", puzzle.title));
                     }
                 } else if input.starts_with("/hide") {
-                    view.push(FeedKind::System, format!("TUI 下用法：/hide y 确认隐藏「{}」并换题", puzzle.title));
+                    // 二次确认：`/hide` 进入待确认态，下一行输入 `y` 即确认；`/hide y` 亦可直接确认。
                     if input.trim() == "/hide y" {
                         let target = session.puzzle_id.clone();
                         session::hide_puzzle(&target)?;
@@ -666,11 +713,12 @@ async fn run_tui_game(
                             }
                             Err(e) => view.push(FeedKind::System, e.message),
                         }
+                    } else {
+                        pending = Some(Confirm::Hide);
+                        view.push(FeedKind::System, format!("确认隐藏「{}」并换题？输入 y 确认，其它取消。", puzzle.title));
                     }
-                } else if session.question_count >= MAX_QUESTIONS {
-                    view.push(FeedKind::System, "已达提问上限，请 /guess 猜底或 /quit。".to_string());
                 } else {
-                    // 普通提问。
+                    // 普通提问（不设问数上限，仅计数）。
                     view.push(FeedKind::Question, input.clone());
                     let r = turtle_soup::ui::tui::run_animated(
                         tui.terminal(),
@@ -778,7 +826,7 @@ fn handle<T: std::fmt::Display>(
             Ok(())
         }
         Err(e) => {
-            // 对局内的预期状态（已达上限 / 本局已结束）按普通提示渲染后继续（见 02 §4.3）。
+            // 对局内的预期状态（本局已结束等）按普通提示渲染后继续（见 02 §4.3）。
             if e.code == ErrorCode::InvalidState {
                 println!("{}", e.message);
                 return Ok(());

@@ -47,7 +47,6 @@ mod tests {
             difficulty: 2,
             surface: "一个男人走进酒吧，要了一杯水。".into(),
             question_count: 0,
-            max_questions: 60,
             hit: 0,
             total: 5,
             ..Default::default()
@@ -76,6 +75,7 @@ mod tests {
 
     #[test]
     fn status_line_format() {
-        assert!(render_status(&view()).contains("问 0/60"));
+        assert!(render_status(&view()).contains("问 0"));
+        assert!(!render_status(&view()).contains("/help"));
     }
 }
